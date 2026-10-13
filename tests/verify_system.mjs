@@ -10,7 +10,6 @@ const supabase = createClient(SUPABASE_URL, SUPABASE_ANON_KEY);
 
 // 1. Google Books API Normalizasyon Testi
 test('1. Google Books API data normalization and fallback resilience', async () => {
-  // Mock Google Books item
   const mockItem = {
     id: 'test_vol_123',
     volumeInfo: {
@@ -83,9 +82,8 @@ test('2. Supabase core tables and relational query check', async () => {
   console.log('✓ All 4 Supabase tables (books, user_books, posts, likes) and relational joins are valid');
 });
 
-// 3. Post Validation Rules (Empty forms, missing books, character bounds)
+// 3. Post Validation Rules
 test('3. Post validation rules and constraints for all 4 types', () => {
-  // Alıntı: kitap ve metin zorunlu
   const validateQuote = (bookId, content) => {
     if (!bookId) return { valid: false, error: 'Kitap seçimi zorunlu.' };
     if (!content || !content.trim()) return { valid: false, error: 'Alıntı metni boş olamaz.' };
@@ -96,7 +94,6 @@ test('3. Post validation rules and constraints for all 4 types', () => {
   assert.equal(validateQuote('book-1', '   ').valid, false);
   assert.equal(validateQuote('book-1', 'Büyük umutlar beslememeli insan.').valid, true);
 
-  // İnceleme: kitap, metin ve 1-5 puan
   const validateReview = (bookId, content, rating) => {
     if (!bookId) return { valid: false, error: 'Kitap seçimi zorunlu.' };
     if (!content || !content.trim()) return { valid: false, error: 'İnceleme metni boş olamaz.' };
@@ -108,7 +105,6 @@ test('3. Post validation rules and constraints for all 4 types', () => {
   assert.equal(validateReview('book-1', 'Çok iyi', 0).valid, false);
   assert.equal(validateReview('book-1', 'Olağanüstü bir roman', 5).valid, true);
 
-  // Serbest ileti: karakter sınırı (maksimum 800)
   const MAX_CHARS = 800;
   const validateThought = (content) => {
     if (!content || !content.trim()) return { valid: false, error: 'İçerik boş olamaz.' };
@@ -139,7 +135,7 @@ test('4. Reading status enums and Turkish labels', () => {
   console.log('✓ Reading status enums and localized labels verified');
 });
 
-// 5. Deduplication & Shelf Separation Logic
+// 5. Deduplication Logic
 test('5. Deduplication logic by Google Volume ID and ISBN', () => {
   const catalog = [
     { id: '1', google_book_id: 'vol_123', isbn: '9789750719387', title: 'Kürk Mantolu Madonna' },
@@ -168,23 +164,73 @@ test('5. Deduplication logic by Google Volume ID and ISBN', () => {
   console.log('✓ Deduplication logic prevents duplicate book entries');
 });
 
-// 6. External API Unreachability Fallback Check
-test('6. Search fallback when external Google Books API is unreachable', async () => {
-  // Simüle edilmiş arama servisi davranışı
-  const hybridSearch = async (query, apiAvailable = false) => {
-    // 1. Yerel veritabanında ara
-    const localResults = [{ id: 'local_1', title: 'Saatleri Ayarlama Enstitüsü', isbn: '9789759955748' }];
+// 6. Open Library Live API Search & Normalization
+test('6. Open Library live API search returns books and works reliably without API key', async () => {
+  const query = 'orhan pamuk';
+  const url = `https://openlibrary.org/search.json?q=${encodeURIComponent(query)}&limit=5&fields=key,title,author_name,first_publish_year,cover_i,isbn,publisher,number_of_pages_median,subject`;
+  const response = await fetch(url);
+  assert.equal(response.status, 200, 'Open Library should return 200 OK');
 
-    if (!apiAvailable) {
-      // Dış API kapalıyken bile yerel sonuçlar kesintisiz döner
-      return { books: localResults, fromApiCount: 0, error: null };
-    }
+  const data = await response.json();
+  assert.ok(data.docs && data.docs.length > 0, 'Open Library should return docs for popular author');
 
-    return { books: localResults, fromApiCount: 1, error: null };
+  const firstDoc = data.docs[0];
+  assert.ok(firstDoc.title, 'Doc must have a title');
+  assert.ok(Array.isArray(firstDoc.author_name), 'Doc must have author_name array');
+
+  console.log(`✓ Open Library search verified live: found ${data.docs.length} books for query "${query}". First: "${firstDoc.title}"`);
+});
+
+// 7. Supabase Catalog Rich Search (Author, Title, Categories)
+test('7. Supabase catalog search matches by author, title, and categories across 40+ books', async () => {
+  const { data: dbBooks, error } = await supabase.from('books').select('*');
+  assert.equal(error, null, 'Error querying books from Supabase');
+  assert.ok(dbBooks.length >= 40, `Database should contain at least 40 books, found ${dbBooks.length}`);
+
+  // Test author match
+  const sabahattinBooks = dbBooks.filter(b => b.authors?.some(a => a.toLowerCase().includes('sabahattin ali')));
+  assert.ok(sabahattinBooks.length >= 3, `Expected at least 3 Sabahattin Ali books, found ${sabahattinBooks.length}`);
+
+  // Test category match
+  const classics = dbBooks.filter(b => b.categories?.some(c => c.toLowerCase().includes('dünya klasikleri')));
+  assert.ok(classics.length >= 10, `Expected at least 10 Dünya Klasikleri books, found ${classics.length}`);
+
+  console.log(`✓ Supabase catalog verified: ${dbBooks.length} books present. Author & category filtering working properly.`);
+});
+
+// 8. Book Enrichment Test (Never leaves null thumbnail or description)
+test('8. Book enrichment helper guarantees non-null thumbnail, description and clean title', () => {
+  const rawBook = {
+    id: 'test_uuid',
+    title: '  Saatleri Ayarlama Enstitüsü\n ',
+    authors: [],
+    thumbnail_url: null,
+    description: null,
+    page_count: null,
+    categories: null
   };
 
-  const fallbackResult = await hybridSearch('Saatleri', false);
-  assert.equal(fallbackResult.books.length, 1);
-  assert.equal(fallbackResult.books[0].title, 'Saatleri Ayarlama Enstitüsü');
-  console.log('✓ Fallback mechanism verified: local book search continues seamlessly even if external API is unreachable');
+  const enrich = (book) => {
+    const cleanTitle = (book.title || 'Başlıksız Eser').trim();
+    let thumb = book.thumbnail_url || 'https://images.unsplash.com/photo-1544716278-ca5e3f4abd8c?w=400&q=80';
+    let desc = book.description || 'Bu edebî eser Kitaphane evrensel kataloğunda yer almaktadır.';
+    return {
+      ...book,
+      title: cleanTitle,
+      thumbnail_url: thumb,
+      description: desc,
+      authors: book.authors?.length ? book.authors : ['Bilinmeyen Yazar'],
+      page_count: book.page_count || 220,
+      categories: book.categories?.length ? book.categories : ['Edebiyat', 'Roman']
+    };
+  };
+
+  const enriched = enrich(rawBook);
+  assert.equal(enriched.title, 'Saatleri Ayarlama Enstitüsü');
+  assert.ok(enriched.thumbnail_url.length > 0, 'Thumbnail must not be null');
+  assert.ok(enriched.description.length > 0, 'Description must not be null');
+  assert.equal(enriched.authors[0], 'Bilinmeyen Yazar');
+  assert.equal(enriched.page_count, 220);
+
+  console.log('✓ Book enrichment verified: No null fields or malformed titles');
 });

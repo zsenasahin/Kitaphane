@@ -154,7 +154,9 @@ export const SearchScreen: React.FC<SearchScreenProps> = ({
               {isFromApi ? (
                 <>
                   <Globe size={11} color={colors.accentDark} />
-                  <Text style={styles.sourceTextApi}>Google Books</Text>
+                  <Text style={styles.sourceTextApi}>
+                    {item.google_book_id?.startsWith('ol_') ? 'Open Library' : 'Google Books'}
+                  </Text>
                 </>
               ) : (
                 <>

@@ -29,6 +29,7 @@ import { Book, UserBook, UserBookStatus, USER_BOOK_STATUS_LABELS } from '../../l
 import { BookCover } from '../../components/BookCover';
 import { libraryService } from '../../services/libraryService';
 import { booksService, isUuid } from '../../services/booksService';
+import { fetchOpenLibraryDescription } from '../../services/googleBooks';
 import { useAuth } from '../../context/AuthContext';
 
 interface BookDetailModalProps {
@@ -61,8 +62,18 @@ export const BookDetailModal: React.FC<BookDetailModalProps> = ({
     setDescriptionExpanded(false);
     setShowStatusPicker(false);
 
-    if (visible && initialBook && user?.id) {
-      loadUserBookStatus(initialBook);
+    if (visible && initialBook) {
+      if (user?.id) {
+        loadUserBookStatus(initialBook);
+      }
+      // Open Library eserinin detaylı özetini arka planda çek
+      if (initialBook.google_book_id?.startsWith('ol_')) {
+        fetchOpenLibraryDescription(initialBook.google_book_id).then((desc) => {
+          if (desc && desc.trim()) {
+            setActiveBook((prev) => (prev ? { ...prev, description: desc } : prev));
+          }
+        });
+      }
     } else {
       setUserBook(null);
     }
