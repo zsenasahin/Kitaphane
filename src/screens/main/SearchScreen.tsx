@@ -45,6 +45,7 @@ export const SearchScreen: React.FC<SearchScreenProps> = ({
   onShareReviewRequest,
 }) => {
   const [query, setQuery] = useState('');
+  const [selectedSource, setSelectedSource] = useState<'all' | 'openlibrary' | 'kitaphane'>('all');
   const [selectedCategory, setSelectedCategory] = useState<string | null>(null);
   const [books, setBooks] = useState<Book[]>([]);
   const [loading, setLoading] = useState(false);
@@ -54,56 +55,71 @@ export const SearchScreen: React.FC<SearchScreenProps> = ({
 
   const debounceTimeout = useRef<ReturnType<typeof setTimeout> | null>(null);
 
-  const performSearch = useCallback(async (searchTerm: string) => {
-    setLoading(true);
-    setErrorMessage(null);
+  const performSearch = useCallback(
+    async (
+      searchTerm: string,
+      source: 'all' | 'openlibrary' | 'kitaphane' = selectedSource,
+      category: string | null = selectedCategory
+    ) => {
+      setLoading(true);
+      setErrorMessage(null);
 
-    try {
-      const { books: results, fromApiCount: apiCount, error } =
-        await booksService.searchBooks(searchTerm, 25);
+      try {
+        const { books: results, fromApiCount: apiCount, error } =
+          await booksService.searchBooks({
+            query: searchTerm,
+            source,
+            category,
+            limit: 25,
+          });
 
-      if (error) {
-        setErrorMessage(error);
-      } else {
-        setBooks(results);
-        setFromApiCount(apiCount);
+        if (error) {
+          setErrorMessage(error);
+        } else {
+          setBooks(results);
+          setFromApiCount(apiCount);
+        }
+      } catch (err: any) {
+        setErrorMessage(err.message || 'Arama sırasında bir sorun oluştu.');
+      } finally {
+        setLoading(false);
       }
-    } catch (err: any) {
-      setErrorMessage(err.message || 'Arama sırasında bir sorun oluştu.');
-    } finally {
-      setLoading(false);
-    }
-  }, []);
+    },
+    [selectedSource, selectedCategory]
+  );
 
   // İlk açılışta popüler/kayıtlı kitapları getir
   useEffect(() => {
-    performSearch('');
-  }, [performSearch]);
+    performSearch('', selectedSource, selectedCategory);
+  }, [selectedSource, selectedCategory]);
+
+  const handleSourceChange = (newSource: 'all' | 'openlibrary' | 'kitaphane') => {
+    setSelectedSource(newSource);
+    performSearch(query, newSource, selectedCategory);
+  };
 
   const handleQueryChange = (text: string) => {
     setQuery(text);
-    if (selectedCategory) setSelectedCategory(null);
 
     if (debounceTimeout.current) {
       clearTimeout(debounceTimeout.current);
     }
 
     debounceTimeout.current = setTimeout(() => {
-      performSearch(text);
+      performSearch(text, selectedSource, selectedCategory);
     }, 400);
   };
 
   const handleCategorySelect = (category: string) => {
     const nextCat = selectedCategory === category ? null : category;
     setSelectedCategory(nextCat);
-    setQuery(nextCat || '');
-    performSearch(nextCat || '');
+    performSearch(query, selectedSource, nextCat);
   };
 
   const handleClear = () => {
     setQuery('');
     setSelectedCategory(null);
-    performSearch('');
+    performSearch('', selectedSource, null);
   };
 
   const renderBookItem = ({ item }: { item: Book }) => {
@@ -275,6 +291,48 @@ export const SearchScreen: React.FC<SearchScreenProps> = ({
             </TouchableOpacity>
           )}
         </View>
+
+        {/* Arama Kaynağı Seçici */}
+        <View style={styles.sourceTabsRow}>
+          <TouchableOpacity
+            style={[
+              styles.sourceTab,
+              selectedSource === 'all' && styles.sourceTabActive,
+            ]}
+            onPress={() => handleSourceChange('all')}
+          >
+            <Sparkles size={13} color={selectedSource === 'all' ? colors.textInverse : colors.textSecondary} />
+            <Text style={[styles.sourceTabText, selectedSource === 'all' && styles.sourceTabTextActive]}>
+              Tümü
+            </Text>
+          </TouchableOpacity>
+
+          <TouchableOpacity
+            style={[
+              styles.sourceTab,
+              selectedSource === 'openlibrary' && styles.sourceTabActive,
+            ]}
+            onPress={() => handleSourceChange('openlibrary')}
+          >
+            <Globe size={13} color={selectedSource === 'openlibrary' ? colors.textInverse : colors.textSecondary} />
+            <Text style={[styles.sourceTabText, selectedSource === 'openlibrary' && styles.sourceTabTextActive]}>
+              Open Library
+            </Text>
+          </TouchableOpacity>
+
+          <TouchableOpacity
+            style={[
+              styles.sourceTab,
+              selectedSource === 'kitaphane' && styles.sourceTabActive,
+            ]}
+            onPress={() => handleSourceChange('kitaphane')}
+          >
+            <Database size={13} color={selectedSource === 'kitaphane' ? colors.textInverse : colors.textSecondary} />
+            <Text style={[styles.sourceTabText, selectedSource === 'kitaphane' && styles.sourceTabTextActive]}>
+              Kitaphane DB
+            </Text>
+          </TouchableOpacity>
+        </View>
       </View>
 
       {/* Arama Sonuçları Listesi */}
@@ -294,7 +352,7 @@ export const SearchScreen: React.FC<SearchScreenProps> = ({
         book={selectedBook}
         onClose={() => setSelectedBook(null)}
         onBookUpdated={() => {
-          if (query.trim()) performSearch(query);
+          if (query.trim()) performSearch(query, selectedSource, selectedCategory);
         }}
         onShareQuote={(b) => onShareQuoteRequest?.(b)}
         onShareReview={(b) => onShareReviewRequest?.(b)}
@@ -312,7 +370,7 @@ const styles = StyleSheet.create({
     backgroundColor: colors.surfaceWarm,
     paddingHorizontal: 20,
     paddingTop: 16,
-    paddingBottom: 16,
+    paddingBottom: 14,
     borderBottomWidth: 1,
     borderBottomColor: colors.borderLight,
   },
@@ -342,6 +400,40 @@ const styles = StyleSheet.create({
     shadowOpacity: 0.06,
     shadowRadius: 4,
     elevation: 2,
+  },
+  sourceTabsRow: {
+    flexDirection: 'row',
+    marginTop: 12,
+    backgroundColor: colors.surfaceVariant,
+    borderRadius: 10,
+    padding: 3,
+    gap: 4,
+  },
+  sourceTab: {
+    flex: 1,
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'center',
+    gap: 6,
+    paddingVertical: 7,
+    borderRadius: 8,
+  },
+  sourceTabActive: {
+    backgroundColor: colors.primary,
+    shadowColor: colors.leatherDark,
+    shadowOffset: { width: 0, height: 1 },
+    shadowOpacity: 0.1,
+    shadowRadius: 2,
+    elevation: 2,
+  },
+  sourceTabText: {
+    fontSize: 12,
+    fontWeight: '600',
+    color: colors.textSecondary,
+  },
+  sourceTabTextActive: {
+    color: colors.textInverse,
+    fontWeight: '700',
   },
   searchInput: {
     flex: 1,

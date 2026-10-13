@@ -234,3 +234,46 @@ test('8. Book enrichment helper guarantees non-null thumbnail, description and c
 
   console.log('✓ Book enrichment verified: No null fields or malformed titles');
 });
+
+// 9. Open Library Books API by ISBN (jscmd=data)
+test('9. Open Library Books API returns structured book data by ISBN', async () => {
+  const isbn = '9789750719387'; // Kürk Mantolu Madonna
+  const url = `https://openlibrary.org/api/books?bibkeys=ISBN:${isbn}&jscmd=data&format=json`;
+  const res = await fetch(url, {
+    headers: { 'User-Agent': 'Kitaphane/1.0 (kitaphane.app; contact@kitaphane.app)' }
+  });
+  assert.equal(res.status, 200, 'Books API should return 200');
+  const json = await res.json();
+  const book = json[`ISBN:${isbn}`];
+  assert.ok(book, 'Book must exist for ISBN');
+  assert.ok(book.title, 'Book must have a title');
+  console.log(`✓ Open Library Books API (ISBN) verified: "${book.title}" (${book.authors?.[0]?.name})`);
+});
+
+// 10. Open Library Works API description extraction
+test('10. Open Library Works API provides rich book synopsis', async () => {
+  const workKey = 'OL1019601W'; // Kara Kitap (Orhan Pamuk)
+  const url = `https://openlibrary.org/works/${workKey}.json`;
+  const res = await fetch(url, {
+    headers: { 'User-Agent': 'Kitaphane/1.0 (kitaphane.app; contact@kitaphane.app)' }
+  });
+  assert.equal(res.status, 200, 'Works API should return 200');
+  const json = await res.json();
+  const desc = typeof json.description === 'string' ? json.description : json.description?.value;
+  assert.ok(desc && desc.length > 20, 'Book description must be present and detailed');
+  console.log(`✓ Open Library Works API verified: received ${desc.length} chars description for work ${workKey}`);
+});
+
+// 11. Open Library Subjects API (turkish_literature)
+test('11. Open Library Subjects API returns works for literary categories', async () => {
+  const subject = 'turkish_literature';
+  const url = `https://openlibrary.org/subjects/${subject}.json?limit=5`;
+  const res = await fetch(url, {
+    headers: { 'User-Agent': 'Kitaphane/1.0 (kitaphane.app; contact@kitaphane.app)' }
+  });
+  assert.equal(res.status, 200, 'Subjects API should return 200');
+  const json = await res.json();
+  assert.ok(json.works && json.works.length > 0, 'Works must not be empty');
+  console.log(`✓ Open Library Subjects API verified: found ${json.works.length} works for subject "${subject}"`);
+});
+

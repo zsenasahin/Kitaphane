@@ -412,18 +412,46 @@ export function enrichBook(book: Book): Book {
   };
 }
 
+import { openLibraryService } from './openLibraryService';
+
+export type BookSearchSource = 'all' | 'openlibrary' | 'kitaphane';
+
+export interface SearchBooksParams {
+  query: string;
+  source?: BookSearchSource;
+  limit?: number;
+  category?: string | null;
+}
+
 export const booksService = {
   /**
-   * Kitap Arama: Önce Supabase yerel veritabanında arar, ardından harici canlı API (Google Books + Open Library) sonuçlarıyla zenginleştirir.
+   * Kitap Arama: Supabase yerel veritabanı ve Open Library API'sini birleştirir veya seçili kaynağa göre arar.
    */
   async searchBooks(
-    query: string,
-    limit = 25
+    queryOrParams: string | SearchBooksParams,
+    limitParam = 25
   ): Promise<{ books: Book[]; fromApiCount: number; error: string | null }> {
-    const trimmed = query.trim().toLowerCase();
+    const params: SearchBooksParams =
+      typeof queryOrParams === 'string'
+        ? { query: queryOrParams, limit: limitParam, source: 'all' }
+        : { source: 'all', limit: limitParam, ...queryOrParams };
 
-    if (!trimmed) {
-      // Boş sorguda veritabanındaki kitapları getir
+    const trimmed = (params.query || '').trim().toLowerCase();
+    const source = params.source || 'all';
+    const limit = params.limit || limitParam;
+    const category = params.category || null;
+
+    // 1. Durum: Boş arama sorgusu
+    if (!trimmed && !category) {
+      if (source === 'openlibrary') {
+        const { books: olBooks } = await openLibraryService.searchBooks({
+          query: 'classics',
+          limit,
+        });
+        return { books: olBooks.map(enrichBook as any), fromApiCount: olBooks.length, error: null };
+      }
+
+      // Veritabanındaki kitapları getir
       const { data: popular } = await supabase
         .from('books')
         .select('*')
@@ -434,32 +462,74 @@ export const booksService = {
         return { books: popular.map(enrichBook), fromApiCount: 0, error: null };
       }
 
-      // Veritabanı henüz boşsa başlangıç kataloğunu sun
       return { books: MASTER_CLASSICS.map(enrichBook), fromApiCount: 0, error: null };
     }
 
     try {
-      // 1. Adım: Yerel veritabanında geniş arama yap (Title, Authors, Categories, ISBN)
-      const { data: dbBooks } = await supabase
-        .from('books')
-        .select('*')
-        .limit(150);
+      let localMatches: Book[] = [];
+      let apiBooks: Array<Omit<Book, 'id'>> = [];
 
-      const localMatches: Book[] = (dbBooks || []).filter((b: any) => {
-        const titleMatch = b.title?.toLowerCase().includes(trimmed);
-        const authorMatch = Array.isArray(b.authors)
-          ? b.authors.some((a: string) => a.toLowerCase().includes(trimmed))
-          : false;
-        const catMatch = Array.isArray(b.categories)
-          ? b.categories.some((c: string) => c.toLowerCase().includes(trimmed))
-          : false;
-        const isbnMatch = b.isbn?.toLowerCase().includes(trimmed);
-        return titleMatch || authorMatch || catMatch || isbnMatch;
-      });
+      // 2. Adım: Yerel Veritabanı Araması (Eğer 'openlibrary' seçili değilse)
+      if (source !== 'openlibrary') {
+        const { data: dbBooks } = await supabase
+          .from('books')
+          .select('*')
+          .limit(150);
 
-      // 2. Adım: Harici canlı arama (Google Books + Open Library fallback)
-      const { books: apiBooks } = await searchGoogleBooks(trimmed, limit);
+        localMatches = (dbBooks || []).filter((b: any) => {
+          const titleMatch = trimmed ? b.title?.toLowerCase().includes(trimmed) : true;
+          const authorMatch = trimmed && Array.isArray(b.authors)
+            ? b.authors.some((a: string) => a.toLowerCase().includes(trimmed))
+            : false;
+          const catMatch = Array.isArray(b.categories)
+            ? b.categories.some((c: string) =>
+                category
+                  ? c.toLowerCase().includes(category.toLowerCase())
+                  : trimmed
+                  ? c.toLowerCase().includes(trimmed)
+                  : false
+              )
+            : false;
+          const isbnMatch = trimmed && b.isbn?.toLowerCase().includes(trimmed);
 
+          if (category && trimmed) {
+            return catMatch && (titleMatch || authorMatch || isbnMatch);
+          }
+          if (category) {
+            return catMatch;
+          }
+          return titleMatch || authorMatch || catMatch || isbnMatch;
+        });
+      }
+
+      // 3. Adım: Canlı Open Library Araması (Eğer 'kitaphane' seçili değilse)
+      if (source !== 'kitaphane') {
+        // ISBN araması kontrolü
+        const isIsbnSearch = /^[0-9X-]{10,17}$/i.test(trimmed.replace(/[\s-]/g, ''));
+        if (isIsbnSearch) {
+          const { book: isbnBook } = await openLibraryService.getBookByIsbn(trimmed);
+          if (isbnBook) {
+            apiBooks.push(isbnBook);
+          }
+        }
+
+        // Genel veya Kategoriye göre Open Library araması
+        const searchQuery = trimmed || (category ? `${category} literature` : 'classic literature');
+        const { books: olResults } = await openLibraryService.searchBooks({
+          query: searchQuery,
+          limit,
+        });
+
+        apiBooks.push(...olResults);
+
+        // İkincil olarak Google Books'u da kontrol et
+        if (apiBooks.length < 5 && trimmed) {
+          const { books: gbResults } = await searchGoogleBooks(trimmed, 10);
+          apiBooks.push(...gbResults);
+        }
+      }
+
+      // 4. Adım: Sonuçları birleştir ve tekilleştir
       const mergedList: Book[] = localMatches.map(enrichBook);
       const existingTitles = new Set(mergedList.map((b) => b.title.toLowerCase().trim()));
       const existingGoogleIds = new Set(
@@ -484,13 +554,22 @@ export const booksService = {
         }
       }
 
-      // 3. Adım: Eğer hem DB hem de dış API sonuç vermediyse başlangıç eserleri arasında filtrele
-      if (mergedList.length === 0) {
+      // 5. Adım: Eğer hiçbir sonuç bulunamadıysa master klasikler arasında filtrele
+      if (mergedList.length === 0 && source !== 'openlibrary') {
         const fallbackMatches = MASTER_CLASSICS.filter((b) => {
-          const matchTitle = b.title.toLowerCase().includes(trimmed);
-          const matchAuthor = b.authors?.some((a) => a.toLowerCase().includes(trimmed));
-          const matchCat = b.categories?.some((c) => c.toLowerCase().includes(trimmed));
-          const matchIsbn = b.isbn?.toLowerCase().includes(trimmed);
+          const matchTitle = trimmed ? b.title.toLowerCase().includes(trimmed) : true;
+          const matchAuthor = trimmed
+            ? b.authors?.some((a) => a.toLowerCase().includes(trimmed))
+            : false;
+          const matchCat = category
+            ? b.categories?.some((c) => c.toLowerCase().includes(category.toLowerCase()))
+            : trimmed
+            ? b.categories?.some((c) => c.toLowerCase().includes(trimmed))
+            : false;
+          const matchIsbn = trimmed ? b.isbn?.toLowerCase().includes(trimmed) : false;
+
+          if (category && trimmed) return matchCat && (matchTitle || matchAuthor || matchIsbn);
+          if (category) return matchCat;
           return matchTitle || matchAuthor || matchCat || matchIsbn;
         }).map(enrichBook);
 
