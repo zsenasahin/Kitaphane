@@ -36,6 +36,7 @@ interface AuthContextType {
   updateUserPassword: (password: string) => Promise<{ error: string | null }>;
   resendVerificationEmail: (email: string) => Promise<{ error: string | null }>;
   signOut: () => Promise<void>;
+  signInAsGuest: () => Promise<void>;
   refreshProfile: () => Promise<void>;
 }
 
@@ -450,6 +451,32 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
     }
   };
 
+  // Misafir / Demo Olarak Keşfet
+  const signInAsGuest = async () => {
+    const guestUser: User = {
+      id: '7fcb4ece-4461-4d1f-ac54-5d176708b037',
+      app_metadata: { provider: 'email' },
+      user_metadata: { full_name: 'Zeynep Sena', username: 'zeyneps' },
+      aud: 'authenticated',
+      created_at: new Date().toISOString(),
+      email: 'zeynep@kitaphane.app',
+      email_confirmed_at: new Date().toISOString(),
+      phone: '',
+      role: 'authenticated',
+      updated_at: new Date().toISOString(),
+    };
+    const guestSession: Session = {
+      access_token: 'guest_token',
+      refresh_token: 'guest_refresh',
+      expires_in: 3600,
+      token_type: 'bearer',
+      user: guestUser,
+    };
+    setSession(guestSession);
+    setUser(guestUser);
+    await fetchProfile(guestUser);
+  };
+
   return (
     <AuthContext.Provider
       value={{
@@ -465,6 +492,7 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
         updateUserPassword,
         resendVerificationEmail,
         signOut,
+        signInAsGuest,
         refreshProfile,
       }}
     >

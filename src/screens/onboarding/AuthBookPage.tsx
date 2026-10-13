@@ -35,7 +35,7 @@ export const AuthBookPage: React.FC<AuthBookPageProps> = ({
   onTurnBackToWelcome,
   onNavigateToForgotPassword,
 }) => {
-  const { signIn, signUp, signInWithGoogle } = useAuth();
+  const { signIn, signUp, signInWithGoogle, signInAsGuest } = useAuth();
 
   const scrollViewRef = useRef<ScrollView>(null);
   const [isKeyboardVisible, setKeyboardVisible] = useState(false);
@@ -398,6 +398,17 @@ export const AuthBookPage: React.FC<AuthBookPageProps> = ({
                 loading={loading}
                 style={styles.submitBtn}
               />
+
+              {/* Misafir Olarak Keşfet Butonu */}
+              <TouchableOpacity
+                style={styles.guestBtn}
+                onPress={signInAsGuest}
+                activeOpacity={0.75}
+              >
+                <Text style={styles.guestBtnText}>
+                  Giriş Yapmadan Kitaphaneyi Keşfet →
+                </Text>
+              </TouchableOpacity>
             </ScrollView>
           </KeyboardAvoidingView>
         </View>
@@ -592,5 +603,18 @@ const styles = StyleSheet.create({
   bookInputLabel: {
     color: onboardingColors.inkSecondary,
     fontSize: 12,
+  },
+  guestBtn: {
+    alignItems: 'center',
+    justifyContent: 'center',
+    paddingVertical: 14,
+    marginTop: 10,
+    marginBottom: 20,
+  },
+  guestBtnText: {
+    color: onboardingColors.inkAccent,
+    fontSize: 13,
+    fontWeight: '700',
+    textDecorationLine: 'underline',
   },
 });
