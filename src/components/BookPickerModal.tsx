@@ -13,7 +13,7 @@ import {
 import { Search as SearchIcon, X, BookOpen } from 'lucide-react-native';
 import { colors } from '../theme/colors';
 import { Book } from '../lib/types';
-import { booksService } from '../services/booksService';
+import { booksService, isUuid } from '../services/booksService';
 import { BookCover } from './BookCover';
 
 interface BookPickerModalProps {
@@ -60,8 +60,8 @@ export const BookPickerModal: React.FC<BookPickerModalProps> = ({
   };
 
   const handleSelect = async (book: Book) => {
-    // Seçilen kitap eğer temp_ id'ye sahipse (Google Books), DB'ye kaydedip öyle döndür
-    if (book.id.startsWith('temp_')) {
+    // Seçilen kitabın geçerli bir Supabase UUID'ye sahip olduğundan emin ol
+    if (!isUuid(book.id)) {
       const { book: persisted } = await booksService.findOrCreateBook(book);
       if (persisted) {
         onSelectBook(persisted);

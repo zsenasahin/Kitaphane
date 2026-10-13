@@ -453,28 +453,41 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
 
   // Misafir / Demo Olarak Keşfet
   const signInAsGuest = async () => {
-    const guestUser: User = {
-      id: '7fcb4ece-4461-4d1f-ac54-5d176708b037',
-      app_metadata: { provider: 'email' },
-      user_metadata: { full_name: 'Zeynep Sena', username: 'zeyneps' },
-      aud: 'authenticated',
-      created_at: new Date().toISOString(),
-      email: 'zeynep@kitaphane.app',
-      email_confirmed_at: new Date().toISOString(),
-      phone: '',
-      role: 'authenticated',
-      updated_at: new Date().toISOString(),
-    };
-    const guestSession: Session = {
-      access_token: 'guest_token',
-      refresh_token: 'guest_refresh',
-      expires_in: 3600,
-      token_type: 'bearer',
-      user: guestUser,
-    };
-    setSession(guestSession);
-    setUser(guestUser);
-    await fetchProfile(guestUser);
+    setIsLoading(true);
+    try {
+      const email = 'zsenasahin.demo@kitaphane.app';
+      const password = 'KitaphaneDemo2026!';
+
+      let { data, error } = await supabase.auth.signInWithPassword({
+        email,
+        password,
+      });
+
+      let targetSession = data?.session;
+      let targetUser = data?.user;
+
+      if (!targetSession) {
+        const signUpRes = await supabase.auth.signUp({
+          email,
+          password,
+          options: {
+            data: { full_name: 'Zeynep Sena', username: 'zsenasahin' },
+          },
+        });
+        targetSession = signUpRes.data?.session;
+        targetUser = signUpRes.data?.user;
+      }
+
+      if (targetSession && targetUser) {
+        setSession(targetSession);
+        setUser(targetUser);
+        await fetchProfile(targetUser);
+      }
+    } catch (e) {
+      console.warn('Guest sign in error:', e);
+    } finally {
+      setIsLoading(false);
+    }
   };
 
   return (

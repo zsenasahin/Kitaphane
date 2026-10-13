@@ -18,6 +18,7 @@ import { Book } from '../../../lib/types';
 import { BookCover } from '../../../components/BookCover';
 import { BookPickerModal } from '../../../components/BookPickerModal';
 import { postsService } from '../../../services/postsService';
+import { booksService, isUuid } from '../../../services/booksService';
 import { useAuth } from '../../../context/AuthContext';
 
 interface CreateReviewModalProps {
@@ -67,11 +68,17 @@ export const CreateReviewModal: React.FC<CreateReviewModalProps> = ({
 
     setSubmitting(true);
     try {
+      let realBook = selectedBook;
+      if (!isUuid(selectedBook.id)) {
+        const { book: persisted } = await booksService.findOrCreateBook(selectedBook);
+        if (persisted) realBook = persisted;
+      }
+
       const { post, error } = await postsService.createPost({
         userId: user.id,
         postType: 'review',
         content: trimmed,
-        bookId: selectedBook.id,
+        bookId: realBook.id,
         reviewRating: rating,
       });
 

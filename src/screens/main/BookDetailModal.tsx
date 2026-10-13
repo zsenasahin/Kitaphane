@@ -28,7 +28,7 @@ import { colors } from '../../theme/colors';
 import { Book, UserBook, UserBookStatus, USER_BOOK_STATUS_LABELS } from '../../lib/types';
 import { BookCover } from '../../components/BookCover';
 import { libraryService } from '../../services/libraryService';
-import { booksService } from '../../services/booksService';
+import { booksService, isUuid } from '../../services/booksService';
 import { useAuth } from '../../context/AuthContext';
 
 interface BookDetailModalProps {
@@ -73,21 +73,17 @@ export const BookDetailModal: React.FC<BookDetailModalProps> = ({
     setLoading(true);
 
     try {
-      // Eğer kitap Google Books'tan gelen geçici id'ye sahipse henüz DB'de olmayabilir
-      let realBookId = currentBook.id;
-      if (currentBook.id.startsWith('temp_')) {
-        // Önce DB'de google_book_id ile var mı sorgulayalım
-        if (currentBook.google_book_id) {
-          const { book: existing } = await booksService.findOrCreateBook(currentBook);
-          if (existing) {
-            realBookId = existing.id;
-            setActiveBook(existing);
-          }
+      let realBook = currentBook;
+      if (!isUuid(currentBook.id)) {
+        const { book: existing } = await booksService.findOrCreateBook(currentBook);
+        if (existing) {
+          realBook = existing;
+          setActiveBook(existing);
         }
       }
 
-      if (!realBookId.startsWith('temp_')) {
-        const { userBook: ub } = await libraryService.getUserBookByBookId(user.id, realBookId);
+      if (isUuid(realBook.id)) {
+        const { userBook: ub } = await libraryService.getUserBookByBookId(user.id, realBook.id);
         setUserBook(ub);
       }
     } catch (e) {
@@ -99,7 +95,7 @@ export const BookDetailModal: React.FC<BookDetailModalProps> = ({
 
   const ensureBookPersisted = async (): Promise<Book | null> => {
     if (!activeBook) return null;
-    if (!activeBook.id.startsWith('temp_')) return activeBook;
+    if (isUuid(activeBook.id)) return activeBook;
 
     // Supabase DB'ye kaydet
     const { book: saved, error } = await booksService.findOrCreateBook(activeBook);

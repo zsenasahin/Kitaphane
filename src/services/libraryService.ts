@@ -1,6 +1,6 @@
 import { supabase } from '../lib/supabase';
 import { UserBook, UserBookStatus } from '../lib/types';
-import { booksService } from './booksService';
+import { booksService, isUuid } from './booksService';
 
 export const libraryService = {
   /**
@@ -47,6 +47,9 @@ export const libraryService = {
    * Kullanıcının belirli bir kitabı kitaplığında olup olmadığını sorgular.
    */
   async getUserBookByBookId(userId: string, bookId: string): Promise<{ userBook: UserBook | null; error: string | null }> {
+    if (!isUuid(bookId)) {
+      return { userBook: null, error: null };
+    }
     try {
       const { data, error } = await supabase
         .from('user_books')
@@ -92,6 +95,9 @@ export const libraryService = {
       notes?: string | null;
     }
   ): Promise<{ userBook: UserBook | null; error: string | null }> {
+    if (!isUuid(bookId)) {
+      return { userBook: null, error: 'Geçersiz kitap tanımlayıcısı (UUID gerekli).' };
+    }
     try {
       // 1. Mevcut kayıt var mı kontrol et
       const { userBook: existing } = await this.getUserBookByBookId(userId, bookId);

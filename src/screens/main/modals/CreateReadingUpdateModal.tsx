@@ -17,6 +17,7 @@ import { BookCover } from '../../../components/BookCover';
 import { BookPickerModal } from '../../../components/BookPickerModal';
 import { postsService } from '../../../services/postsService';
 import { libraryService } from '../../../services/libraryService';
+import { booksService, isUuid } from '../../../services/booksService';
 import { useAuth } from '../../../context/AuthContext';
 
 interface CreateReadingUpdateModalProps {
@@ -78,17 +79,23 @@ export const CreateReadingUpdateModal: React.FC<CreateReadingUpdateModalProps> =
 
     setSubmitting(true);
     try {
+      let realBook = selectedBook;
+      if (!isUuid(selectedBook.id)) {
+        const { book: persisted } = await booksService.findOrCreateBook(selectedBook);
+        if (persisted) realBook = persisted;
+      }
+
       // 1. Kitaplığı güncelle (Senkronizasyon: kitaplık kaydıyla tutarlı çalışır)
-      await libraryService.addOrUpdateUserBook(user.id, selectedBook.id, selectedStatus);
+      await libraryService.addOrUpdateUserBook(user.id, realBook.id, selectedStatus);
 
       // 2. Sosyal akış için post oluştur
-      const message = `"${selectedBook.title}" ${activeOption.textTemplate}`;
+      const message = `"${realBook.title}" ${activeOption.textTemplate}`;
 
       const { post, error } = await postsService.createPost({
         userId: user.id,
         postType: 'reading_update',
         content: message,
-        bookId: selectedBook.id,
+        bookId: realBook.id,
       });
 
       if (error) {

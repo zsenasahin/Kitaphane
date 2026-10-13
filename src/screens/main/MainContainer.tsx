@@ -145,11 +145,20 @@ export const MainContainer: React.FC = () => {
     outputRange: ['0deg', '45deg'],
   });
 
+  const [feedRefreshKey, setFeedRefreshKey] = useState(0);
+  const [libraryRefreshKey, setLibraryRefreshKey] = useState(0);
+
+  const refreshAll = () => {
+    setFeedRefreshKey((prev) => prev + 1);
+    setLibraryRefreshKey((prev) => prev + 1);
+  };
+
   const renderCurrentScreen = () => {
     switch (activeTab) {
       case 'home':
         return (
           <HomeScreen
+            key={`home_${feedRefreshKey}`}
             onNavigateToSearch={() => setActiveTab('search')}
             onOpenCreateMenu={openMenu}
           />
@@ -170,6 +179,7 @@ export const MainContainer: React.FC = () => {
       case 'library':
         return (
           <LibraryScreen
+            key={`lib_${libraryRefreshKey}`}
             onNavigateToSearch={() => setActiveTab('search')}
             onShareQuoteRequest={(b) => {
               setPreSelectedBook(b);
@@ -431,6 +441,7 @@ export const MainContainer: React.FC = () => {
         initialBook={preSelectedBook}
         onClose={() => setQuoteModalVisible(false)}
         onPostCreated={() => {
+          refreshAll();
           setActiveTab('home');
         }}
       />
@@ -440,6 +451,7 @@ export const MainContainer: React.FC = () => {
         initialBook={preSelectedBook}
         onClose={() => setReviewModalVisible(false)}
         onPostCreated={() => {
+          refreshAll();
           setActiveTab('home');
         }}
       />
@@ -449,6 +461,7 @@ export const MainContainer: React.FC = () => {
         initialBook={preSelectedBook}
         onClose={() => setReadingUpdateModalVisible(false)}
         onPostCreated={() => {
+          refreshAll();
           setActiveTab('home');
         }}
       />
@@ -457,6 +470,7 @@ export const MainContainer: React.FC = () => {
         visible={thoughtModalVisible}
         onClose={() => setThoughtModalVisible(false)}
         onPostCreated={() => {
+          refreshAll();
           setActiveTab('home');
         }}
       />

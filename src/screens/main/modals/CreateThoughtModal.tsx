@@ -18,6 +18,7 @@ import { Book } from '../../../lib/types';
 import { BookCover } from '../../../components/BookCover';
 import { BookPickerModal } from '../../../components/BookPickerModal';
 import { postsService } from '../../../services/postsService';
+import { booksService, isUuid } from '../../../services/booksService';
 import { useAuth } from '../../../context/AuthContext';
 
 interface CreateThoughtModalProps {
@@ -65,11 +66,21 @@ export const CreateThoughtModal: React.FC<CreateThoughtModalProps> = ({
 
     setSubmitting(true);
     try {
+      let bookId: string | null = null;
+      if (attachedBook) {
+        if (!isUuid(attachedBook.id)) {
+          const { book: persisted } = await booksService.findOrCreateBook(attachedBook);
+          bookId = persisted?.id || null;
+        } else {
+          bookId = attachedBook.id;
+        }
+      }
+
       const { post, error } = await postsService.createPost({
         userId: user.id,
         postType: 'thought',
         content: trimmed,
-        bookId: attachedBook?.id || null,
+        bookId,
       });
 
       if (error) {
