@@ -1,6 +1,7 @@
 import { supabase } from '../lib/supabase';
-import { Book } from '../lib/types';
+import { AuthorResult, Book } from '../lib/types';
 import { searchGoogleBooks } from './googleBooks';
+import { openLibraryService } from './openLibraryService';
 
 export const isUuid = (id?: string | null): boolean => {
   if (!id) return false;
@@ -362,347 +363,442 @@ export const MASTER_CLASSICS: Book[] = [
   },
 ];
 
-export const STARTER_BOOKS = MASTER_CLASSICS;
+
+const OL = 'https://openlibrary.org';
+
+/** Stok fotoğraflar gerçek kapak değildir; bunlar için tasarlanmış kapak çizilir. */
+export const hasRealCover = (url?: string | null): boolean =>
+  !!url && /^https?:\/\//.test(url) && !url.includes('unsplash.com');
+
+const norm = (s?: string | null) =>
+  (s || '')
+    .toLocaleLowerCase('tr')
+    .normalize('NFD')
+    .replace(/[̀-ͯ]/g, '')
+    .replace(/ı/g, 'i')
+    .replace(/[^a-z0-9 ]/g, ' ')
+    .replace(/\s+/g, ' ')
+    .trim();
+
+// Aynı eser farklı kaynaklarda "Dostoyevski" / "Fyodor Dostoyevski" gibi yazılabilir; soyadı yeterli
+const authorSurname = (a?: string | null) => norm(a).split(' ').pop() || '';
+const bookKey = (b: Pick<Book, 'title' | 'authors'>) => `${norm(b.title)}|${authorSurname(b.authors?.[0])}`;
+
+/** Katalog Türkçe ve İngilizce eserlere odaklanır; Latin dışı alfabeli kayıtlar elenir. */
+const NON_LATIN = /[\u0370-\u03FF\u0400-\u04FF\u0590-\u05FF\u0600-\u06FF\u0E00-\u0E7F\u3040-\u30FF\u3400-\u9FFF\uAC00-\uD7AF]/;
+const isLatinScript = (b: Pick<Book, 'title' | 'authors'>) =>
+  !NON_LATIN.test(b.title) && !NON_LATIN.test(b.authors?.[0] || '');
+
+/** Yavaş dış servisler aramayı kilitlemesin diye süre sınırı. */
+const withTimeout = <T,>(p: Promise<T>, ms: number, fallback: T): Promise<T> =>
+  Promise.race([p, new Promise<T>((resolve) => setTimeout(() => resolve(fallback), ms))]);
+
+/** PostgREST `or()` filtresini bozacak karakterleri temizler. */
+const sanitize = (q: string) => q.replace(/[,()%*\\:"']/g, ' ').replace(/\s+/g, ' ').trim();
 
 /**
- * Kitap nesnesini eksik kapak, açıklama ve biçimlendirme hatalarına karşı zenginleştirir.
+ * Kitap nesnesini normalize eder. Eksik alanları uydurmaz; yalnızca
+ * master klasik listesinden gerçek bilgiyi tamamlar.
  */
-export function enrichBook(book: Book): Book {
-  const cleanTitle = (book.title || 'Başlıksız Eser').trim();
-  let cleanThumb = book.thumbnail_url;
-  let cleanDesc = book.description;
+export function enrichBook(book: Book | (Omit<Book, 'id'> & { id?: string })): Book {
+  const title = (book.title || 'Başlıksız Eser').trim();
+  const id =
+    book.id && book.id.trim() !== ''
+      ? book.id
+      : `temp_${book.google_book_id || Math.random().toString(36).substring(2, 9)}`;
 
-  // Master klasikler listesinde karşılığı var mı kontrol et
-  const master = MASTER_CLASSICS.find(
-    (s) =>
-      s.id === book.id ||
-      s.title.toLowerCase().trim() === cleanTitle.toLowerCase() ||
-      (s.isbn && book.isbn && s.isbn === book.isbn)
-  );
-
-  if (master) {
-    if (!cleanThumb || cleanThumb.trim() === '') cleanThumb = master.thumbnail_url;
-    if (!cleanDesc || cleanDesc.trim() === '') cleanDesc = master.description;
-  }
-
-  // Eğer hala kapak yoksa edebî kaliteli bir görsel sağla
-  if (!cleanThumb || cleanThumb.trim() === '') {
-    cleanThumb = 'https://images.unsplash.com/photo-1544716278-ca5e3f4abd8c?w=400&q=80';
-  }
+  const master = MASTER_CLASSICS.find((s) => s.id === id || norm(s.title) === norm(title));
+  const authors =
+    book.authors && book.authors.length > 0 && book.authors[0]
+      ? book.authors.filter((a) => a && a !== 'Bilinmeyen Yazar')
+      : master?.authors || [];
 
   return {
     ...book,
-    title: cleanTitle,
-    thumbnail_url: cleanThumb,
-    description:
-      cleanDesc && cleanDesc.trim() !== ''
-        ? cleanDesc.trim()
-        : 'Bu edebî eser Kitaphane evrensel kataloğunda yer almaktadır. Eser hakkında alıntı yapabilir, inceleme yazabilir veya kişisel kitaplığınıza ekleyebilirsiniz.',
-    authors:
-      book.authors && book.authors.length > 0 && book.authors[0] !== ''
-        ? book.authors
-        : master?.authors || ['Bilinmeyen Yazar'],
-    publisher: book.publisher || master?.publisher || 'Kitaphane Edebiyat Yayınları',
-    page_count: book.page_count || master?.page_count || 220,
-    categories:
-      book.categories && book.categories.length > 0
-        ? book.categories
-        : master?.categories || ['Edebiyat', 'Roman'],
-    language: book.language || 'tr',
-  };
+    id,
+    title,
+    authors,
+    thumbnail_url: hasRealCover(book.thumbnail_url) ? book.thumbnail_url : null,
+    description: book.description?.trim() || master?.description || null,
+    publisher:
+      book.publisher && !/Genel Edebiyat|Kitaphane Edebiyat|Edebiyat Yayınları/.test(book.publisher)
+        ? book.publisher
+        : master?.publisher || null,
+    page_count: book.page_count || master?.page_count || null,
+    categories: book.categories && book.categories.length > 0 ? book.categories : master?.categories || null,
+  } as Book;
 }
 
-import { openLibraryService } from './openLibraryService';
+const toDbPayload = (b: Book) => ({
+  google_book_id: b.google_book_id || null,
+  title: b.title.trim(),
+  authors: b.authors && b.authors.length ? b.authors : null,
+  publisher: b.publisher || null,
+  published_date: b.published_date || null,
+  description: b.description || null,
+  page_count: b.page_count || null,
+  categories: b.categories || null,
+  thumbnail_url: b.thumbnail_url || null,
+  isbn: b.isbn || null,
+});
 
-export type BookSearchSource = 'all' | 'openlibrary' | 'kitaphane';
-
-export interface SearchBooksParams {
-  query: string;
-  source?: BookSearchSource;
-  limit?: number;
-  category?: string | null;
-}
+/** Aynı eserin farklı kaynaklardaki kopyalarını tekilleştirir; kapaklı olanı tercih eder. */
+const dedupe = (books: Book[]): Book[] => {
+  const map = new Map<string, Book>();
+  for (const b of books) {
+    const k = bookKey(b);
+    const existing = map.get(k);
+    if (!existing) {
+      map.set(k, b);
+    } else if (!existing.thumbnail_url && b.thumbnail_url && !isUuid(existing.id)) {
+      map.set(k, b);
+    } else if (isUuid(b.id) && !isUuid(existing.id)) {
+      map.set(k, { ...b, thumbnail_url: b.thumbnail_url || existing.thumbnail_url });
+    }
+  }
+  return Array.from(map.values());
+};
 
 export const booksService = {
   /**
-   * Kitap Arama: Supabase yerel veritabanı ve Open Library API'sini birleştirir veya seçili kaynağa göre arar.
+   * Kitap arama: önce Kitaphane kataloğu, ardından dış kataloglar.
+   * Dış sonuçlar arka planda kataloğa kaydedilir; böylece katalog her aramayla büyür.
    */
   async searchBooks(
-    queryOrParams: string | SearchBooksParams,
-    limitParam = 25
-  ): Promise<{ books: Book[]; fromApiCount: number; error: string | null }> {
-    const params: SearchBooksParams =
-      typeof queryOrParams === 'string'
-        ? { query: queryOrParams, limit: limitParam, source: 'all' }
-        : { source: 'all', limit: limitParam, ...queryOrParams };
+    query: string,
+    limit = 30,
+    /** Yerel sonuçlar hazır olunca (dış kaynaklar beklenmeden) çağrılır. */
+    onPartial?: (books: Book[]) => void
+  ): Promise<{ books: Book[]; error: string | null }> {
+    const q = sanitize(query);
+    if (!q) return { books: [], error: null };
 
-    const trimmed = (params.query || '').trim().toLowerCase();
-    const source = params.source || 'all';
-    const limit = params.limit || limitParam;
-    const category = params.category || null;
-
-    // 1. Durum: Boş arama sorgusu
-    if (!trimmed && !category) {
-      if (source === 'openlibrary') {
-        const { books: olBooks } = await openLibraryService.searchBooks({
-          query: 'classics',
-          limit,
-        });
-        return { books: olBooks.map(enrichBook as any), fromApiCount: olBooks.length, error: null };
-      }
-
-      // Veritabanındaki kitapları getir
-      const { data: popular } = await supabase
-        .from('books')
-        .select('*')
-        .limit(limit)
-        .order('created_at', { ascending: false });
-
-      if (popular && popular.length > 0) {
-        return { books: popular.map(enrichBook), fromApiCount: 0, error: null };
-      }
-
-      return { books: MASTER_CLASSICS.map(enrichBook), fromApiCount: 0, error: null };
-    }
+    const nq = norm(q);
+    const rank = (list: Book[]) =>
+      dedupe(list).sort((a, b) => {
+        const score = (x: Book) =>
+          (norm(x.title) === nq ? 6 : norm(x.title).startsWith(nq) ? 4 : norm(x.title).includes(nq) ? 2 : 0) +
+          ((x.authors || []).some((au) => norm(au).includes(nq)) ? 2 : 0) +
+          (x.thumbnail_url ? 1 : 0) +
+          (isUuid(x.id) ? 1 : 0);
+        return score(b) - score(a);
+      });
 
     try {
-      let localMatches: Book[] = [];
-      let apiBooks: Array<Omit<Book, 'id'>> = [];
+      const localPromise = this.searchCatalog(q, limit).catch(() => [] as Book[]);
+      const remotePromise = this.searchRemote(q, limit).catch(() => [] as Book[]);
 
-      // 2. Adım: Yerel Veritabanı Araması (Eğer 'openlibrary' seçili değilse)
-      if (source !== 'openlibrary') {
-        const { data: dbBooks } = await supabase
-          .from('books')
-          .select('*')
-          .limit(150);
+      const local = await localPromise;
+      if (onPartial && local.length) onPartial(rank(local).slice(0, limit));
 
-        localMatches = (dbBooks || []).filter((b: any) => {
-          const titleMatch = trimmed ? b.title?.toLowerCase().includes(trimmed) : true;
-          const authorMatch = trimmed && Array.isArray(b.authors)
-            ? b.authors.some((a: string) => a.toLowerCase().includes(trimmed))
-            : false;
-          const catMatch = Array.isArray(b.categories)
-            ? b.categories.some((c: string) =>
-                category
-                  ? c.toLowerCase().includes(category.toLowerCase())
-                  : trimmed
-                  ? c.toLowerCase().includes(trimmed)
-                  : false
-              )
-            : false;
-          const isbnMatch = trimmed && b.isbn?.toLowerCase().includes(trimmed);
-
-          if (category && trimmed) {
-            return catMatch && (titleMatch || authorMatch || isbnMatch);
-          }
-          if (category) {
-            return catMatch;
-          }
-          return titleMatch || authorMatch || catMatch || isbnMatch;
-        });
-      }
-
-      // 3. Adım: Canlı Open Library Araması (Eğer 'kitaphane' seçili değilse)
-      if (source !== 'kitaphane') {
-        // ISBN araması kontrolü
-        const isIsbnSearch = /^[0-9X-]{10,17}$/i.test(trimmed.replace(/[\s-]/g, ''));
-        if (isIsbnSearch) {
-          const { book: isbnBook } = await openLibraryService.getBookByIsbn(trimmed);
-          if (isbnBook) {
-            apiBooks.push(isbnBook);
-          }
-        }
-
-        // Genel veya Kategoriye göre Open Library araması
-        const searchQuery = trimmed || (category ? `${category} literature` : 'classic literature');
-        const { books: olResults } = await openLibraryService.searchBooks({
-          query: searchQuery,
-          limit,
-        });
-
-        apiBooks.push(...olResults);
-
-        // İkincil olarak Google Books'u da kontrol et
-        if (apiBooks.length < 5 && trimmed) {
-          const { books: gbResults } = await searchGoogleBooks(trimmed, 10);
-          apiBooks.push(...gbResults);
-        }
-      }
-
-      // 4. Adım: Sonuçları birleştir ve tekilleştir
-      const mergedList: Book[] = localMatches.map(enrichBook);
-      const existingTitles = new Set(mergedList.map((b) => b.title.toLowerCase().trim()));
-      const existingGoogleIds = new Set(
-        mergedList.filter((b) => b.google_book_id).map((b) => b.google_book_id)
-      );
-
-      let fromApiCount = 0;
-      for (const apiBook of apiBooks) {
-        const normTitle = apiBook.title.toLowerCase().trim();
-        if (
-          !existingTitles.has(normTitle) &&
-          (!apiBook.google_book_id || !existingGoogleIds.has(apiBook.google_book_id))
-        ) {
-          mergedList.push(
-            enrichBook({
-              id: `temp_${apiBook.google_book_id || Math.random().toString(36).substring(2, 9)}`,
-              ...apiBook,
-            })
-          );
-          fromApiCount++;
-          existingTitles.add(normTitle);
-        }
-      }
-
-      // 5. Adım: Eğer hiçbir sonuç bulunamadıysa master klasikler arasında filtrele
-      if (mergedList.length === 0 && source !== 'openlibrary') {
-        const fallbackMatches = MASTER_CLASSICS.filter((b) => {
-          const matchTitle = trimmed ? b.title.toLowerCase().includes(trimmed) : true;
-          const matchAuthor = trimmed
-            ? b.authors?.some((a) => a.toLowerCase().includes(trimmed))
-            : false;
-          const matchCat = category
-            ? b.categories?.some((c) => c.toLowerCase().includes(category.toLowerCase()))
-            : trimmed
-            ? b.categories?.some((c) => c.toLowerCase().includes(trimmed))
-            : false;
-          const matchIsbn = trimmed ? b.isbn?.toLowerCase().includes(trimmed) : false;
-
-          if (category && trimmed) return matchCat && (matchTitle || matchAuthor || matchIsbn);
-          if (category) return matchCat;
-          return matchTitle || matchAuthor || matchCat || matchIsbn;
-        }).map(enrichBook);
-
-        if (fallbackMatches.length > 0) {
-          return { books: fallbackMatches, fromApiCount: 0, error: null };
-        }
-      }
-
-      return { books: mergedList, fromApiCount, error: null };
+      const remote = await remotePromise;
+      this.cacheBooks(remote);
+      return { books: rank([...local, ...remote]).slice(0, limit), error: null };
     } catch (err: any) {
-      return { books: [], fromApiCount: 0, error: err.message || 'Kitap arama hatası.' };
+      return { books: [], error: err.message || 'Arama sırasında bir sorun oluştu.' };
     }
   },
 
-  /**
-   * Bir kitabı yerel veritabanında bulur veya yoksa kaydeder (UUID döndürür).
-   */
-  async findOrCreateBook(
-    bookData: Omit<Book, 'id'> | Book
-  ): Promise<{ book: Book | null; error: string | null }> {
-    try {
-      const enriched = enrichBook(
-        'id' in bookData ? (bookData as Book) : ({ ...bookData, id: '' } as Book)
-      );
+  /** Kitaphane veritabanında arama (search_books RPC varsa onu kullanır). */
+  async searchCatalog(q: string, limit = 30): Promise<Book[]> {
+    const rpc = await supabase.rpc('search_books', { q, max_results: limit });
+    if (!rpc.error && Array.isArray(rpc.data)) {
+      return (rpc.data as Book[]).map(enrichBook);
+    }
 
-      // Zaten gerçek bir Supabase UUID ise doğrudan kontrol et
-      if ('id' in bookData && bookData.id && isUuid(bookData.id)) {
-        const { data: existing } = await supabase
-          .from('books')
-          .select('*')
-          .eq('id', bookData.id)
-          .maybeSingle();
-        if (existing) return { book: enrichBook(existing), error: null };
+    // RPC yoksa: başlıkta ilike + yazar dizisinde istemci tarafı eşleşme
+    const nq = norm(q);
+    const [byTitle, authorRows] = await Promise.all([
+      supabase.from('books').select('*').ilike('title', `%${q}%`).limit(limit),
+      supabase.from('books').select('id, authors').order('created_at', { ascending: false }).limit(2000),
+    ]);
+    const authorIds = (authorRows.data || [])
+      .filter((r: any) => (r.authors || []).some((a: string) => norm(a).includes(nq)))
+      .map((r: any) => r.id)
+      .slice(0, limit);
+    const byAuthor = authorIds.length
+      ? await supabase.from('books').select('*').in('id', authorIds)
+      : { data: [] as any[] };
+    return [...(byTitle.data || []), ...(byAuthor.data || [])].map(enrichBook);
+  },
+
+  /** Dış kataloglar (Türkçe ve İngilizce eserler). */
+  async searchRemote(q: string, limit = 30): Promise<Book[]> {
+    const results: Array<Omit<Book, 'id'>> = [];
+
+    const isIsbn = /^[0-9Xx]{10,13}$/.test(q.replace(/[\s-]/g, ''));
+    if (isIsbn) {
+      const { book } = await openLibraryService.getBookByIsbn(q);
+      if (book) results.push(book);
+    }
+
+    const empty = { books: [] as Array<Omit<Book, 'id'>> };
+    const [ol, gb] = await Promise.all([
+      withTimeout(openLibraryService.searchBooks({ query: q, limit }), 9000, empty),
+      withTimeout(searchGoogleBooks(q, 20), 7000, empty).catch(() => empty),
+    ]);
+    results.push(...ol.books, ...(gb.books || []));
+
+    return results
+      .map((b) => enrichBook(b))
+      .filter((b) => b.title && b.title !== 'Başlıksız Eser' && isLatinScript(b));
+  },
+
+  /** Dış kaynaklardan gelen kitapları kataloğa toplu kaydeder (sessizce). */
+  async cacheBooks(books: Book[]): Promise<void> {
+    try {
+      const candidates = books.filter((b) => b.google_book_id && !isUuid(b.id) && b.authors?.length);
+      if (candidates.length === 0) return;
+      const ids = candidates.map((b) => b.google_book_id as string);
+      const { data: existing } = await supabase
+        .from('books')
+        .select('google_book_id')
+        .in('google_book_id', ids);
+      const have = new Set((existing || []).map((r: any) => r.google_book_id));
+      const fresh = candidates.filter((b) => !have.has(b.google_book_id));
+      if (fresh.length === 0) return;
+      const rows = fresh.slice(0, 40).map(toDbPayload);
+      // Migration uygulanmışsa eşzamanlı eklemeler çakışmaz; değilse düz ekleme
+      const { error } = await supabase
+        .from('books')
+        .upsert(rows, { onConflict: 'google_book_id', ignoreDuplicates: true });
+      if (error) await supabase.from('books').insert(rows);
+    } catch {
+      // Önbellekleme başarısız olsa da arama sonuçları gösterilmeye devam eder
+    }
+  },
+
+  /** Okurların en çok kitaplığa eklediği kitaplar. */
+  async getPopularBooks(limit = 12): Promise<Book[]> {
+    const { data: rows } = await supabase
+      .from('user_books')
+      .select('book_id')
+      .order('created_at', { ascending: false })
+      .limit(500);
+
+    const counts: Record<string, number> = {};
+    (rows || []).forEach((r: any) => (counts[r.book_id] = (counts[r.book_id] || 0) + 1));
+    const topIds = Object.entries(counts)
+      .sort((a, b) => b[1] - a[1])
+      .slice(0, limit)
+      .map(([id]) => id);
+
+    let books: Book[] = [];
+    if (topIds.length) {
+      const { data } = await supabase.from('books').select('*').in('id', topIds);
+      books = (data || [])
+        .map(enrichBook)
+        .sort((a: Book, b: Book) => (counts[b.id] || 0) - (counts[a.id] || 0));
+    }
+    if (books.length < limit) {
+      const { data } = await supabase
+        .from('books')
+        .select('*')
+        .not('thumbnail_url', 'is', null)
+        .not('thumbnail_url', 'ilike', '%unsplash%')
+        .order('created_at', { ascending: false })
+        .limit(limit * 2);
+      books = dedupe([...books, ...(data || []).map(enrichBook)]);
+    }
+    return books.slice(0, limit);
+  },
+
+  /** Yazar arama: önce katalogdaki yazarlar (onPartial), ardından dış katalog. */
+  async searchAuthors(
+    query: string,
+    limit = 15,
+    onPartial?: (authors: AuthorResult[]) => void
+  ): Promise<AuthorResult[]> {
+    const q = sanitize(query);
+    if (!q) return [];
+    const nq = norm(q);
+
+    const remotePromise = withTimeout(
+      fetch(`${OL}/search/authors.json?q=${encodeURIComponent(q)}&limit=${limit}`)
+        .then((res) => (res.ok ? res.json() : { docs: [] }))
+        .catch(() => ({ docs: [] })),
+      9000,
+      { docs: [] }
+    );
+
+    const local: AuthorResult[] = [];
+    for (const b of await this.searchCatalog(q, 40).catch(() => [] as Book[])) {
+      for (const a of b.authors || []) {
+        if (norm(a).includes(nq) && !local.some((x) => norm(x.name) === norm(a))) {
+          local.push({ name: a, key: null, topWork: b.title, workCount: null, photoUrl: null });
+        }
+      }
+    }
+    if (onPartial && local.length) onPartial(local.slice(0, limit));
+
+    const remote: AuthorResult[] = [];
+    for (const d of (await remotePromise).docs || []) {
+      if (!d.name || NON_LATIN.test(d.name)) continue;
+      const key = d.key ? String(d.key).replace('/authors/', '') : null;
+      remote.push({
+        name: d.name,
+        key,
+        topWork: d.top_work || null,
+        workCount: d.work_count ?? null,
+        photoUrl: key ? `https://covers.openlibrary.org/a/olid/${key}-M.jpg?default=false` : null,
+      });
+    }
+
+    // Aynı isim: katalogdaki kaydı dış kaynağın fotoğraf/eser sayısıyla birleştir
+    const merged = new Map<string, AuthorResult>();
+    for (const a of [...local, ...remote]) {
+      const k = norm(a.name);
+      const prev = merged.get(k);
+      merged.set(
+        k,
+        prev
+          ? {
+              ...prev,
+              key: prev.key || a.key,
+              photoUrl: prev.photoUrl || a.photoUrl,
+              workCount: Math.max(prev.workCount || 0, a.workCount || 0) || null,
+            }
+          : a
+      );
+    }
+    return Array.from(merged.values()).slice(0, limit);
+  },
+
+  /** Yazar sayfası: biyografi ve eserler. */
+  async getAuthor(
+    name: string,
+    key?: string | null
+  ): Promise<{ bio: string | null; birth: string | null; death: string | null; photoUrl: string | null; books: Book[] }> {
+    let bio: string | null = null;
+    let birth: string | null = null;
+    let death: string | null = null;
+    let authorKey = key || null;
+
+    try {
+      if (!authorKey) {
+        const res = await fetch(`${OL}/search/authors.json?q=${encodeURIComponent(name)}&limit=1`);
+        if (res.ok) {
+          const d = await res.json();
+          const first = d.docs?.[0];
+          if (first && norm(first.name) === norm(name)) authorKey = String(first.key).replace('/authors/', '');
+        }
+      }
+      if (authorKey) {
+        const res = await fetch(`${OL}/authors/${authorKey}.json`);
+        if (res.ok) {
+          const d = await res.json();
+          bio = typeof d.bio === 'string' ? d.bio : d.bio?.value || null;
+          birth = d.birth_date || null;
+          death = d.death_date || null;
+        }
+      }
+    } catch {
+      // biyografi opsiyonel
+    }
+
+    const [local, remote] = await Promise.all([
+      this.searchCatalog(name, 60).then((list) => ({
+        data: list.filter((b) => (b.authors || []).some((a) => norm(a) === norm(name))),
+      })),
+      openLibraryService.searchBooks({ author: name, limit: 40 }),
+    ]);
+    const remoteBooks = remote.books.map((b) => enrichBook(b)).filter(isLatinScript);
+    this.cacheBooks(remoteBooks);
+    const books = dedupe([...local.data, ...remoteBooks]).sort(
+      (a, b) => Number(!!b.thumbnail_url) - Number(!!a.thumbnail_url)
+    );
+
+    return {
+      bio: bio ? bio.replace(/\(\[Source.*$/s, '').trim() : null,
+      birth,
+      death,
+      photoUrl: authorKey ? `https://covers.openlibrary.org/a/olid/${authorKey}-L.jpg?default=false` : null,
+      books,
+    };
+  },
+
+  /** Eksik açıklamayı dış katalogdan tamamlar. */
+  async loadDescription(book: Book): Promise<string | null> {
+    if (book.description) return book.description;
+    if (book.google_book_id?.startsWith('ol_')) {
+      const desc = await openLibraryService.getWorkDescription(book.google_book_id);
+      if (desc) {
+        if (isUuid(book.id)) {
+          supabase.from('books').update({ description: desc }).eq('id', book.id).then(() => undefined);
+        }
+        return desc.replace(/\(\[Source.*$/s, '').replace(/-{5,}[\s\S]*$/, '').trim();
+      }
+    }
+    return null;
+  },
+
+  /** Bir kitabın topluluk istatistikleri. */
+  async getBookStats(bookId: string): Promise<{ readers: number; avgRating: number | null; ratingCount: number }> {
+    if (!isUuid(bookId)) return { readers: 0, avgRating: null, ratingCount: 0 };
+    const [readers, ratings] = await Promise.all([
+      supabase.from('user_books').select('id', { count: 'exact', head: true }).eq('book_id', bookId),
+      supabase.from('posts').select('review_rating').eq('book_id', bookId).not('review_rating', 'is', null),
+    ]);
+    const vals = (ratings.data || []).map((r: any) => Number(r.review_rating)).filter(Boolean);
+    return {
+      readers: readers.count || 0,
+      avgRating: vals.length ? vals.reduce((a, b) => a + b, 0) / vals.length : null,
+      ratingCount: vals.length,
+    };
+  },
+
+  /**
+   * Bir kitabı katalogda bulur, yoksa kaydeder ve gerçek UUID'li kaydı döndürür.
+   */
+  async findOrCreateBook(bookData: Book | Omit<Book, 'id'>): Promise<{ book: Book | null; error: string | null }> {
+    try {
+      const enriched = enrichBook(bookData as Book);
+
+      if (isUuid(enriched.id)) {
+        const { data } = await supabase.from('books').select('*').eq('id', enriched.id).maybeSingle();
+        if (data) return { book: enrichBook(data), error: null };
       }
 
-      // 1. Google / Open Library Book ID ile kontrol et
       if (enriched.google_book_id) {
-        const { data: byGoogleId } = await supabase
+        const { data } = await supabase
           .from('books')
           .select('*')
           .eq('google_book_id', enriched.google_book_id)
+          .limit(1)
           .maybeSingle();
-
-        if (byGoogleId) {
-          return { book: enrichBook(byGoogleId), error: null };
-        }
+        if (data) return { book: enrichBook(data), error: null };
       }
 
-      // 2. ISBN ile kontrol et
       if (enriched.isbn) {
-        const { data: byIsbn } = await supabase
-          .from('books')
-          .select('*')
-          .eq('isbn', enriched.isbn)
-          .maybeSingle();
-
-        if (byIsbn) {
-          return { book: enrichBook(byIsbn), error: null };
-        }
+        const { data } = await supabase.from('books').select('*').eq('isbn', enriched.isbn).limit(1).maybeSingle();
+        if (data && norm(data.title) === norm(enriched.title)) return { book: enrichBook(data), error: null };
       }
 
-      // 3. Başlık ile kontrol et
-      if (enriched.title) {
-        const { data: byTitle } = await supabase
-          .from('books')
-          .select('*')
-          .ilike('title', enriched.title.trim())
-          .maybeSingle();
-
-        if (byTitle) {
-          return { book: enrichBook(byTitle), error: null };
-        }
-      }
-
-      // 4. Veritabanına yeni kitap olarak kaydet
-      const insertPayload = {
-        google_book_id: enriched.google_book_id || null,
-        title: enriched.title.trim(),
-        authors: enriched.authors,
-        publisher: enriched.publisher,
-        published_date: enriched.published_date || null,
-        description: enriched.description,
-        page_count: enriched.page_count,
-        categories: enriched.categories,
-        thumbnail_url: enriched.thumbnail_url,
-        isbn: enriched.isbn,
-      };
-
-      const { data: inserted, error: insertError } = await supabase
+      const { data: byTitle } = await supabase
         .from('books')
-        .insert(insertPayload)
+        .select('*')
+        .ilike('title', enriched.title.trim())
+        .limit(5);
+      const sameWork = (byTitle || []).find(
+        (b: any) => norm(b.authors?.[0]) === norm(enriched.authors?.[0])
+      );
+      if (sameWork) return { book: enrichBook(sameWork), error: null };
+
+      const { data: inserted, error } = await supabase
+        .from('books')
+        .insert(toDbPayload(enriched))
         .select()
         .single();
-
-      if (insertError) {
-        // Eşzamanlı kayıt durumunda tekrar kontrol et
-        if (enriched.title) {
-          const { data: retry } = await supabase
-            .from('books')
-            .select('*')
-            .ilike('title', enriched.title.trim())
-            .maybeSingle();
-          if (retry) return { book: enrichBook(retry), error: null };
-        }
-        return { book: null, error: insertError.message };
-      }
-
+      if (error) return { book: null, error: error.message };
       return { book: enrichBook(inserted), error: null };
     } catch (err: any) {
       return { book: null, error: err.message };
     }
   },
 
-  /**
-   * Kitap ID'si ile kitap detayını getirir.
-   */
   async getBookById(bookId: string): Promise<{ book: Book | null; error: string | null }> {
-    try {
-      const { data, error } = await supabase
-        .from('books')
-        .select('*')
-        .eq('id', bookId)
-        .maybeSingle();
-
-      if (data) return { book: enrichBook(data), error: null };
-
-      // Starter listesinde var mı?
-      const starter = MASTER_CLASSICS.find((b) => b.id === bookId);
-      if (starter) return { book: enrichBook(starter), error: null };
-
-      return { book: null, error: error?.message || 'Kitap bulunamadı.' };
-    } catch (err: any) {
-      return { book: null, error: err.message };
-    }
+    const { data, error } = await supabase.from('books').select('*').eq('id', bookId).maybeSingle();
+    if (data) return { book: enrichBook(data), error: null };
+    return { book: null, error: error?.message || 'Kitap bulunamadı.' };
   },
 };

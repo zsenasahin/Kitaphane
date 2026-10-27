@@ -1,153 +1,143 @@
-import React from 'react';
-import { View, Text, StyleSheet, Image, ViewStyle, StyleProp } from 'react-native';
-import { Book as BookIcon } from 'lucide-react-native';
-import { colors } from '../theme/colors';
+import React, { useEffect, useState } from 'react';
+import { Image, StyleProp, StyleSheet, Text, View, ViewStyle } from 'react-native';
+import { useTheme } from '../context/ThemeContext';
+import { fonts, hashString, shade } from '../theme/themes';
+import { hasRealCover } from '../services/booksService';
+import { coverService } from '../services/coverService';
 
 interface BookCoverProps {
   url?: string | null;
   title: string;
+  isbn?: string | null;
   author?: string | null;
   width?: number;
   height?: number;
   style?: StyleProp<ViewStyle>;
+  /** Gölgeyi belirginleştirir (detay sayfasındaki büyük kapak için). */
   standingShadow?: boolean;
 }
+
+/** Open Library eksik kapaklar için boş görsel döndürür; default=false ile 404 alıp tasarım kapağa düşeriz. */
+const withNoDefault = (url: string) =>
+  url.includes('covers.openlibrary.org') && !url.includes('default=') ? `${url}?default=false` : url;
 
 export const BookCover: React.FC<BookCoverProps> = ({
   url,
   title,
+  isbn,
   author,
   width = 90,
-  height = 135,
+  height,
   style,
   standingShadow = false,
 }) => {
-  const hasImage = !!url && (url.startsWith('http://') || url.startsWith('https://'));
+  const { theme } = useTheme();
+  const [failed, setFailed] = useState(false);
+  const ownCover = hasRealCover(url) && !failed;
+  // Kayıtlı kapak yoksa (veya yüklenemediyse) gerçek kapağı dış katalogdan bul
+  const [found, setFound] = useState<string | null>(() =>
+    ownCover ? null : coverService.peek(title, author) || null
+  );
+  useEffect(() => {
+    if (ownCover) return;
+    let alive = true;
+    coverService.resolve(title, author, isbn).then((u) => alive && setFound(u));
+    return () => {
+      alive = false;
+    };
+  }, [ownCover, title, author]);
+  const [foundFailed, setFoundFailed] = useState(false);
+
+  const h = height ?? Math.round(width * 1.5);
+  const imageUrl = ownCover ? url! : !foundFailed ? found : null;
+  const showImage = !!imageUrl;
+  const seed = hashString(title + (author || ''));
+  const bg = theme.spines[seed % theme.spines.length];
+  const ink = shade(bg, -0.62);
+  const r = Math.max(3, width * 0.05);
 
   return (
     <View
       style={[
-        styles.container,
-        { width, height },
-        standingShadow && styles.standingShadow,
+        {
+          width,
+          height: h,
+          borderRadius: r,
+          backgroundColor: bg,
+          shadowColor: '#2A1A10',
+          shadowOffset: { width: 2, height: standingShadow ? 10 : 4 },
+          shadowOpacity: standingShadow ? 0.3 : 0.16,
+          shadowRadius: standingShadow ? 16 : 6,
+          elevation: standingShadow ? 10 : 4,
+        },
         style,
       ]}
     >
-      {hasImage ? (
-        <Image
-          source={{ uri: url! }}
-          style={styles.image}
-          resizeMode="cover"
-        />
-      ) : (
-        // Görsel yoksa zarif kabartma deri kapak tasarımı
-        <View style={styles.placeholderCover}>
-          <View style={styles.foilBorder}>
-            <BookIcon size={width * 0.22} color={colors.goldLight} style={{ opacity: 0.85 }} />
+      <View style={[StyleSheet.absoluteFill, { borderRadius: r, overflow: 'hidden' }]}>
+        {/* Tasarım kapak her zaman altta; gerçek kapak yüklenince üstüne oturur */}
+        <View style={[styles.generated, { padding: width * 0.09 }]}>
+          <View
+            style={[
+              styles.frame,
+              { borderColor: ink + '55', borderRadius: Math.max(2, width * 0.03), padding: width * 0.06 },
+            ]}
+          >
+            <View style={[styles.ornament, { backgroundColor: ink + '66', width: width * 0.22 }]} />
             <Text
-              numberOfLines={3}
-              style={[styles.placeholderTitle, { fontSize: Math.max(9, width * 0.1) }]}
+              numberOfLines={4}
+              adjustsFontSizeToFit
+              style={{
+                fontFamily: fonts.serif,
+                fontWeight: '700',
+                color: ink,
+                fontSize: Math.max(8, width * 0.12),
+                lineHeight: Math.max(10, width * 0.15),
+                textAlign: 'center',
+              }}
             >
               {title}
             </Text>
-            {author ? (
+            <View style={[styles.ornament, { backgroundColor: ink + '66', width: width * 0.12 }]} />
+            {author && width > 50 ? (
               <Text
-                numberOfLines={1}
-                style={[styles.placeholderAuthor, { fontSize: Math.max(8, width * 0.08) }]}
+                numberOfLines={2}
+                style={{
+                  color: ink + 'CC',
+                  fontSize: Math.max(7, width * 0.075),
+                  textAlign: 'center',
+                  fontStyle: 'italic',
+                }}
               >
                 {author}
               </Text>
             ) : null}
           </View>
         </View>
-      )}
-
-      {/* Cilt / Sırt Gölgelendirme Efekti (Sol Kenar Derinliği) */}
-      <View style={styles.spineHinge} />
-      <View style={styles.spineHighlight} />
-
-      {/* Sağ Kenar Sayfa Bloğu İpucu */}
-      <View style={styles.pageEdgeLine} />
+        {showImage && (
+          <Image
+            source={{ uri: withNoDefault(imageUrl!) }}
+            style={StyleSheet.absoluteFill}
+            resizeMode="cover"
+            onError={() => (ownCover ? setFailed(true) : setFoundFailed(true))}
+          />
+        )}
+        {/* Cilt kıvrımı ve ışık yansıması */}
+        <View style={[styles.hinge, { width: Math.max(3, width * 0.06) }]} />
+        <View style={[styles.hingeLight, { left: Math.max(3, width * 0.06) }]} />
+      </View>
     </View>
   );
 };
 
 const styles = StyleSheet.create({
-  container: {
-    borderRadius: 4,
-    overflow: 'hidden',
-    backgroundColor: colors.leatherDark,
-    shadowColor: colors.leatherDark,
-    shadowOffset: { width: 3, height: 4 },
-    shadowOpacity: 0.25,
-    shadowRadius: 6,
-    elevation: 5,
-    position: 'relative',
-  },
-  standingShadow: {
-    shadowOffset: { width: 4, height: 8 },
-    shadowOpacity: 0.35,
-    shadowRadius: 10,
-    elevation: 8,
-  },
-  image: {
-    width: '100%',
-    height: '100%',
-    borderRadius: 4,
-  },
-  placeholderCover: {
-    width: '100%',
-    height: '100%',
-    backgroundColor: colors.primaryDark,
-    padding: 6,
-    justifyContent: 'center',
-    alignItems: 'center',
-  },
-  foilBorder: {
-    width: '100%',
-    height: '100%',
+  generated: { flex: 1 },
+  frame: {
+    flex: 1,
     borderWidth: 1,
-    borderColor: 'rgba(212, 175, 55, 0.4)',
-    borderRadius: 2,
-    padding: 4,
-    justifyContent: 'center',
     alignItems: 'center',
+    justifyContent: 'space-evenly',
   },
-  placeholderTitle: {
-    color: colors.goldLight,
-    fontWeight: '700',
-    textAlign: 'center',
-    marginTop: 6,
-    fontFamily: 'serif',
-  },
-  placeholderAuthor: {
-    color: '#D4C3A3',
-    fontStyle: 'italic',
-    textAlign: 'center',
-    marginTop: 4,
-  },
-  spineHinge: {
-    position: 'absolute',
-    left: 0,
-    top: 0,
-    bottom: 0,
-    width: 6,
-    backgroundColor: 'rgba(0, 0, 0, 0.25)',
-  },
-  spineHighlight: {
-    position: 'absolute',
-    left: 6,
-    top: 0,
-    bottom: 0,
-    width: 2,
-    backgroundColor: 'rgba(255, 255, 255, 0.15)',
-  },
-  pageEdgeLine: {
-    position: 'absolute',
-    right: 0,
-    top: 0,
-    bottom: 0,
-    width: 1.5,
-    backgroundColor: 'rgba(240, 230, 210, 0.4)',
-  },
+  ornament: { height: 1.5, borderRadius: 1 },
+  hinge: { position: 'absolute', left: 0, top: 0, bottom: 0, backgroundColor: 'rgba(0,0,0,0.14)' },
+  hingeLight: { position: 'absolute', top: 0, bottom: 0, width: 1.5, backgroundColor: 'rgba(255,255,255,0.28)' },
 });

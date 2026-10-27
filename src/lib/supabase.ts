@@ -8,7 +8,7 @@ export const SUPABASE_ANON_KEY =
   'eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6InFvbXJpdGVnd2NmeHB3cGZoaGZ3Iiwicm9sZSI6ImFub24iLCJpYXQiOjE3OTE4Mjc1OTMsImV4cCI6MjEwNzQwMzU5M30.3zvTygIIe0kzSX7HS92FulEXC7e4cEmmtNbGaQlSL-U';
 
 // Web ve mobil uyumlu güvenli storage sağlayıcısı
-const safeStorage = {
+export const safeStorage = {
   getItem: async (key: string): Promise<string | null> => {
     try {
       if (Platform.OS === 'web' && typeof window !== 'undefined') {

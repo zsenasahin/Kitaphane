@@ -23,7 +23,14 @@
       "favicon": "./assets/favicon.png"
     },
     "plugins": [
-      "expo-web-browser"
+      "expo-web-browser",
+      [
+        "expo-image-picker",
+        {
+          "photosPermission": "Profil fotoğrafını seçebilmen için galerine erişmemiz gerekiyor.",
+          "cameraPermission": "Profil fotoğrafı çekebilmen için kameraya erişmemiz gerekiyor."
+        }
+      ]
     ]
   }
 }

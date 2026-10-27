@@ -1,6 +1,6 @@
 import { supabase } from '../lib/supabase';
 import { UserBook, UserBookStatus } from '../lib/types';
-import { booksService, isUuid } from './booksService';
+import { isUuid } from './booksService';
 
 export const libraryService = {
   /**
@@ -115,10 +115,13 @@ export const libraryService = {
       if (additional?.notes !== undefined) payload.notes = additional.notes;
 
       // Okuma tarihlerini mantıksal olarak güncelle
-      if (status === 'reading' && !existing?.started_at) {
+      if ((status === 'reading' || status === 'read') && !existing?.started_at) {
         payload.started_at = now;
-      } else if (status === 'completed') {
-        payload.finished_at = now;
+      }
+      if (status === 'read') {
+        if (existing?.status !== 'read' || !existing?.finished_at) payload.finished_at = now;
+      } else {
+        payload.finished_at = null;
       }
 
       if (existing) {

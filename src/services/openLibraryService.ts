@@ -65,14 +65,14 @@ export function normalizeOpenLibraryDoc(doc: any): Omit<Book, 'id'> {
     publisher:
       Array.isArray(doc.publisher) && doc.publisher.length > 0
         ? doc.publisher[0]
-        : 'Genel Edebiyat Yayınları',
+        : null,
     published_date: doc.first_publish_year ? String(doc.first_publish_year) : null,
     description: null,
-    page_count: doc.number_of_pages_median || doc.number_of_pages || 240,
+    page_count: doc.number_of_pages_median || doc.number_of_pages || null,
     categories,
     thumbnail_url: thumb,
     isbn,
-    language: Array.isArray(doc.language) && doc.language.length > 0 ? doc.language[0] : 'tr',
+    language: Array.isArray(doc.language) && doc.language.length > 0 ? doc.language[0] : null,
     average_rating: null,
     ratings_count: null,
   };
@@ -107,6 +107,7 @@ export const openLibraryService = {
 
       const limit = opts.limit || 25;
       const page = opts.page || 1;
+      params.append('lang', 'tr');
       params.append('limit', String(limit));
       params.append('page', String(page));
       params.append(
@@ -179,7 +180,7 @@ export const openLibraryService = {
         publisher: Array.isArray(raw.publishers) && raw.publishers.length > 0 ? raw.publishers[0].name : 'Edebiyat Yayınları',
         published_date: raw.publish_date || null,
         description: typeof raw.notes === 'string' ? raw.notes : (typeof raw.description === 'string' ? raw.description : null),
-        page_count: raw.number_of_pages || 240,
+        page_count: raw.number_of_pages || null,
         categories: Array.isArray(raw.subjects) ? raw.subjects.slice(0, 3).map((s: any) => s.name) : ['Dünya Klasikleri'],
         thumbnail_url: thumb,
         isbn: cleanIsbn,
@@ -254,7 +255,7 @@ export const openLibraryService = {
           publisher: 'Dünya Klasikleri',
           published_date: w.first_publish_year ? String(w.first_publish_year) : null,
           description: null,
-          page_count: 260,
+          page_count: null,
           categories: Array.isArray(w.subject) ? w.subject.slice(0, 3) : [subject],
           thumbnail_url: thumb,
           isbn: null,
@@ -323,7 +324,7 @@ export const openLibraryService = {
           publisher: 'Klasik Yayınlar',
           published_date: null,
           description: desc,
-          page_count: 240,
+          page_count: null,
           categories: Array.isArray(e.subjects) ? e.subjects.slice(0, 3) : ['Edebiyat'],
           thumbnail_url: thumb,
           isbn: null,

@@ -7,6 +7,8 @@ import { AuthProvider, useAuth } from './src/context/AuthContext';
 import { OnboardingContainer } from './src/screens/onboarding/OnboardingContainer';
 import { ForgotPasswordScreen } from './src/screens/auth/ForgotPasswordScreen';
 import { MainContainer } from './src/screens/main/MainContainer';
+import { ThemeProvider, useTheme } from './src/context/ThemeContext';
+import { ToastProvider } from './src/context/ToastContext';
 import { colors } from './src/theme/colors';
 
 type AuthScreenType = 'onboarding' | 'forgot_password';
@@ -55,15 +57,24 @@ function RootNavigator() {
   );
 }
 
+function ThemedStatusBar() {
+  const { theme } = useTheme();
+  return <StatusBar style={theme.dark ? 'light' : 'dark'} />;
+}
+
 export default function App() {
   return (
     <SafeAreaProvider>
-      <StatusBar style="dark" />
-      <AuthProvider>
-        <View style={styles.container}>
-          <RootNavigator />
-        </View>
-      </AuthProvider>
+      <ThemeProvider>
+        <ToastProvider>
+          <ThemedStatusBar />
+          <AuthProvider>
+            <View style={styles.container}>
+              <RootNavigator />
+            </View>
+          </AuthProvider>
+        </ToastProvider>
+      </ThemeProvider>
     </SafeAreaProvider>
   );
 }

@@ -1,543 +1,315 @@
-import React, { useState, useEffect, useCallback } from 'react';
+import React, { useCallback, useEffect, useRef, useState } from 'react';
 import {
-  View,
-  Text,
-  StyleSheet,
-  ScrollView,
-  TouchableOpacity,
   ActivityIndicator,
+  Animated,
+  Easing,
+  Modal,
+  Pressable,
   RefreshControl,
-  Dimensions,
+  ScrollView,
+  StyleSheet,
+  Text,
+  TouchableWithoutFeedback,
+  View,
 } from 'react-native';
-import {
-  Plus,
-  BookMarked,
-  BookOpen,
-  Sparkles,
-  Library as LibraryIcon,
-} from 'lucide-react-native';
-import { colors } from '../../theme/colors';
-import { UserBook, UserBookStatus, USER_BOOK_STATUS_LABELS, Book } from '../../lib/types';
-import { libraryService } from '../../services/libraryService';
+import { BookOpenText, Plus, Quote, Search, X } from 'lucide-react-native';
 import { useAuth } from '../../context/AuthContext';
+import { useApp } from '../../context/AppContext';
+import { useStyles, useTheme } from '../../context/ThemeContext';
+import { USER_BOOK_STATUS_LABELS, USER_BOOK_STATUS_ORDER, UserBook, UserBookStatus } from '../../lib/types';
+import { libraryService } from '../../services/libraryService';
+import { enrichBook } from '../../services/booksService';
+import { Bookshelf } from '../../components/Bookshelf';
 import { BookCover } from '../../components/BookCover';
-import { BookDetailModal } from './BookDetailModal';
+import { STATUS_ICONS, statusColor } from '../../components/StatusSheet';
+import { Chip, IconButton, PressableScale, ProgressBar, useNativeDriver } from '../../components/ui';
+import { fonts, radius, Theme } from '../../theme/themes';
 
-type FilterTab = 'all' | UserBookStatus;
+type Filter = 'all' | UserBookStatus;
 
-const TABS: { id: FilterTab; label: string }[] = [
-  { id: 'all', label: 'Tümü' },
-  { id: 'reading', label: 'Okuyorum' },
-  { id: 'want_to_read', label: 'Kitaplıkta' },
-  { id: 'completed', label: 'Okudum' },
-  { id: 'dropped', label: 'Yarım' },
-];
-
-const { width: SCREEN_WIDTH } = Dimensions.get('window');
-const BOOKS_PER_SHELF = 3;
-const SHELF_WIDTH = SCREEN_WIDTH - 32;
-const BOOK_WIDTH = Math.floor((SHELF_WIDTH - 48) / BOOKS_PER_SHELF);
-const BOOK_HEIGHT = Math.floor(BOOK_WIDTH * 1.48);
-
-interface LibraryScreenProps {
-  onNavigateToSearch?: () => void;
-  onShareQuoteRequest?: (book: Book) => void;
-  onShareReviewRequest?: (book: Book) => void;
-}
-
-export const LibraryScreen: React.FC<LibraryScreenProps> = ({
-  onNavigateToSearch,
-  onShareQuoteRequest,
-  onShareReviewRequest,
-}) => {
+export const LibraryScreen: React.FC = () => {
+  const { theme } = useTheme();
+  const s = useStyles(makeStyles);
   const { user } = useAuth();
-  const [activeTab, setActiveTab] = useState<FilterTab>('all');
-  const [userBooks, setUserBooks] = useState<UserBook[]>([]);
+  const { versions, goTab, openStatusSheet, push, openComposer } = useApp();
+
+  const [books, setBooks] = useState<UserBook[]>([]);
   const [loading, setLoading] = useState(true);
   const [refreshing, setRefreshing] = useState(false);
-  const [selectedBook, setSelectedBook] = useState<Book | null>(null);
+  const [filter, setFilter] = useState<Filter>('all');
+  const [pulled, setPulled] = useState<UserBook | null>(null);
 
-  const fetchLibrary = useCallback(async () => {
-    if (!user?.id) {
-      setLoading(false);
-      return;
-    }
-
-    try {
-      const { userBooks: data, error } = await libraryService.getUserBooks(user.id);
-      if (!error) {
-        setUserBooks(data);
-      }
-    } catch (e) {
-      console.warn('Kitaplık yüklenirken hata:', e);
-    } finally {
-      setLoading(false);
-      setRefreshing(false);
-    }
+  const load = useCallback(async () => {
+    if (!user) return;
+    const { userBooks } = await libraryService.getUserBooks(user.id);
+    setBooks(userBooks.filter((ub) => ub.book).map((ub) => ({ ...ub, book: enrichBook(ub.book!) })));
+    setLoading(false);
+    setRefreshing(false);
   }, [user?.id]);
 
   useEffect(() => {
-    fetchLibrary();
-  }, [fetchLibrary]);
+    load();
+  }, [load, versions.library]);
 
-  const onRefresh = () => {
-    setRefreshing(true);
-    fetchLibrary();
-  };
+  const counts = USER_BOOK_STATUS_ORDER.reduce(
+    (acc, st) => ({ ...acc, [st]: books.filter((b) => b.status === st).length }),
+    {} as Record<UserBookStatus, number>
+  );
+  const visible = filter === 'all' ? books : books.filter((b) => b.status === filter);
+  const yearDone = books.filter(
+    (b) => b.status === 'read' && b.finished_at && new Date(b.finished_at).getFullYear() === new Date().getFullYear()
+  ).length;
 
-  // Filtreleme
-  const filteredBooks = userBooks.filter((ub) => {
-    if (activeTab === 'all') return true;
-    return ub.status === activeTab;
-  });
-
-  // Raflara bölme (Her rafta 3 kitap)
-  const shelves: UserBook[][] = [];
-  for (let i = 0; i < filteredBooks.length; i += BOOKS_PER_SHELF) {
-    shelves.push(filteredBooks.slice(i, i + BOOKS_PER_SHELF));
-  }
-
-  // Sekmelerdeki sayıları hesapla
-  const countByStatus: Record<string, number> = {
-    all: userBooks.length,
-    reading: userBooks.filter((b) => b.status === 'reading').length,
-    want_to_read: userBooks.filter((b) => b.status === 'want_to_read').length,
-    completed: userBooks.filter((b) => b.status === 'completed').length,
-    dropped: userBooks.filter((b) => b.status === 'dropped').length,
-  };
+  const emptySlot = (
+    <PressableScale onPress={() => goTab('search')} style={s.addSlot}>
+      <Plus size={18} color={theme.onPrimary} />
+      <Text style={s.addSlotText}>Kitap ekle</Text>
+    </PressableScale>
+  );
 
   return (
-    <View style={styles.container}>
-      {/* Başlık Çubuğu */}
-      <View style={styles.header}>
-        <View>
-          <Text style={styles.title}>Kişisel Kitaplığım</Text>
-          <Text style={styles.subtitle}>
-            {userBooks.length} eser raflarınızda dizili
-          </Text>
-        </View>
-
-        {onNavigateToSearch && (
-          <TouchableOpacity
-            style={styles.addBtn}
-            onPress={onNavigateToSearch}
-            activeOpacity={0.8}
-          >
-            <Plus size={20} color={colors.textInverse} />
-          </TouchableOpacity>
-        )}
-      </View>
-
-      {/* Raf Filtre Butonları */}
-      <View style={styles.tabContainer}>
-        <ScrollView
-          horizontal
-          showsHorizontalScrollIndicator={false}
-          contentContainerStyle={styles.tabScroll}
-        >
-          {TABS.map((tab) => {
-            const isSelected = activeTab === tab.id;
-            const count = countByStatus[tab.id] || 0;
-            return (
-              <TouchableOpacity
-                key={tab.id}
-                onPress={() => setActiveTab(tab.id)}
-                style={[styles.tabBtn, isSelected && styles.tabBtnActive]}
-                activeOpacity={0.7}
-              >
-                <Text
-                  style={[styles.tabText, isSelected && styles.tabTextActive]}
-                >
-                  {tab.label}
-                </Text>
-                <View
-                  style={[
-                    styles.tabCountBadge,
-                    isSelected && styles.tabCountBadgeActive,
-                  ]}
-                >
-                  <Text
-                    style={[
-                      styles.tabCountText,
-                      isSelected && styles.tabCountTextActive,
-                    ]}
-                  >
-                    {count}
-                  </Text>
-                </View>
-              </TouchableOpacity>
-            );
-          })}
-        </ScrollView>
-      </View>
-
-      {/* Kitaplık Rafları Alanı */}
+    <View style={s.container}>
       <ScrollView
-        contentContainerStyle={styles.shelvesContent}
+        contentContainerStyle={s.scroll}
         showsVerticalScrollIndicator={false}
         refreshControl={
-          <RefreshControl
-            refreshing={refreshing}
-            onRefresh={onRefresh}
-            tintColor={colors.primary}
-          />
+          <RefreshControl refreshing={refreshing} onRefresh={() => { setRefreshing(true); load(); }} tintColor={theme.primary} />
         }
       >
+        <View style={s.header}>
+          <View style={{ flex: 1 }}>
+            <Text style={s.title}>Kitaplığım</Text>
+            <Text style={s.subtitle}>
+              {books.length} kitap · bu yıl {yearDone} kitap bitirdin
+            </Text>
+          </View>
+          <IconButton onPress={() => goTab('search')} accessibilityLabel="Kitap ara">
+            <Search size={20} color={theme.text} />
+          </IconButton>
+        </View>
+
+        <ScrollView horizontal showsHorizontalScrollIndicator={false} contentContainerStyle={s.chips}>
+          <Chip label={`Tümü · ${books.length}`} active={filter === 'all'} onPress={() => setFilter('all')} />
+          {USER_BOOK_STATUS_ORDER.map((st) => (
+            <Chip
+              key={st}
+              label={`${USER_BOOK_STATUS_LABELS[st]} · ${counts[st] || 0}`}
+              active={filter === st}
+              color={statusColor(theme, st)}
+              onPress={() => setFilter(st)}
+            />
+          ))}
+        </ScrollView>
+
         {loading ? (
-          <View style={styles.centerContainer}>
-            <ActivityIndicator size="large" color={colors.primary} />
-            <Text style={styles.loadingText}>Kitaplığınız hazırlanıyor...</Text>
-          </View>
-        ) : filteredBooks.length === 0 ? (
-          <View style={styles.emptyCard}>
-            <View style={styles.emptyIconCircle}>
-              <LibraryIcon size={34} color={colors.primary} />
-            </View>
-            <Text style={styles.emptyTitle}>
-              {activeTab === 'all'
-                ? 'Kitaplığınız Henüz Boş'
-                : `"${TABS.find((t) => t.id === activeTab)?.label}" Rafında Kitap Yok`}
-            </Text>
-            <Text style={styles.emptySubtitle}>
-              {activeTab === 'all'
-                ? 'Okuduğunuz veya okumak istediğiniz kitapları ekleyerek ahşap raflarınızı doldurmaya başlayın.'
-                : 'Bu kategoride kayıtlı bir kitabınız bulunmuyor. Yeni bir eser keşfedip ekleyebilirsiniz.'}
-            </Text>
-
-            {onNavigateToSearch && (
-              <TouchableOpacity
-                style={styles.actionBtn}
-                onPress={onNavigateToSearch}
-                activeOpacity={0.85}
-              >
-                <Plus size={16} color={colors.textInverse} style={{ marginRight: 6 }} />
-                <Text style={styles.actionBtnText}>Kitap Keşfet & Ekle</Text>
-              </TouchableOpacity>
-            )}
-          </View>
+          <ActivityIndicator color={theme.primary} style={{ marginTop: 60 }} />
         ) : (
-          <View style={styles.bookcaseContainer}>
-            {/* Ahşap Kitaplık Ünitesi */}
-            {shelves.map((shelf, shelfIndex) => (
-              <View key={`shelf_${shelfIndex}`} style={styles.shelfRow}>
-                {/* Rafta Dik Duran Kitaplar */}
-                <View style={styles.booksOnShelf}>
-                  {shelf.map((userBookItem) => {
-                    const book = userBookItem.book;
-                    if (!book) return null;
-
-                    return (
-                      <TouchableOpacity
-                        key={userBookItem.id}
-                        style={styles.bookSlot}
-                        activeOpacity={0.8}
-                        onPress={() => setSelectedBook(book)}
-                      >
-                        {/* Dik Duran Ciltli Kitap */}
-                        <View style={styles.standingBookWrapper}>
-                          <BookCover
-                            url={book.thumbnail_url}
-                            title={book.title}
-                            author={book.authors?.[0] || ''}
-                            width={BOOK_WIDTH}
-                            height={BOOK_HEIGHT}
-                            standingShadow
-                          />
-                        </View>
-
-                        {/* Kitap İsim Yazısı */}
-                        <Text style={styles.bookSpineTitle} numberOfLines={2}>
-                          {book.title}
-                        </Text>
-                        <Text style={styles.bookSpineAuthor} numberOfLines={1}>
-                          {book.authors?.[0] || ''}
-                        </Text>
-                      </TouchableOpacity>
-                    );
-                  })}
-
-                  {/* Eğer rafta 3'ten az kitap varsa boş alanı doldur */}
-                  {Array.from({ length: BOOKS_PER_SHELF - shelf.length }).map(
-                    (_, emptyIdx) => (
-                      <View
-                        key={`empty_${emptyIdx}`}
-                        style={[styles.bookSlot, { opacity: 0.15 }]}
-                      >
-                        <View
-                          style={{
-                            width: BOOK_WIDTH,
-                            height: BOOK_HEIGHT,
-                            borderWidth: 1.5,
-                            borderStyle: 'dashed',
-                            borderColor: colors.borderDark,
-                            borderRadius: 4,
-                          }}
-                        />
-                      </View>
-                    )
-                  )}
-                </View>
-
-                {/* Gerçekçi Ahşap Raf Kirişi (Shelf Beam) */}
-                <View style={styles.woodenBeam}>
-                  {/* Üst Vurgu / Pah Çizgisi */}
-                  <View style={styles.beamTopHighlight} />
-                  {/* Ahşap Gövdesi */}
-                  <View style={styles.beamBody}>
-                    <View style={styles.woodGrainLine} />
-                  </View>
-                  {/* Alt Gölgelendirme */}
-                  <View style={styles.beamBottomShadow} />
-                </View>
-              </View>
-            ))}
-          </View>
+          <>
+            <Bookshelf books={visible} onBookPress={setPulled} emptySlot={filter === 'all' ? emptySlot : undefined} />
+            {books.length === 0 && (
+              <Text style={s.hint}>
+                Rafların boş görünüyor. Arama sekmesinden kitap bulup “Kitaplığıma Ekle” dediğinde burada yerini alacak.
+              </Text>
+            )}
+            {books.length > 0 && visible.length === 0 && (
+              <Text style={s.hint}>Bu rafta henüz kitap yok.</Text>
+            )}
+          </>
         )}
       </ScrollView>
 
-      {/* Kitap Detayı Modalı */}
-      <BookDetailModal
-        visible={!!selectedBook}
-        book={selectedBook}
-        onClose={() => setSelectedBook(null)}
-        onBookUpdated={() => {
-          fetchLibrary();
-        }}
-        onShareQuote={(b) => onShareQuoteRequest?.(b)}
-        onShareReview={(b) => onShareReviewRequest?.(b)}
+      <PulledBook
+        userBook={pulled}
+        onClose={() => setPulled(null)}
+        onUpdate={(ub) => openStatusSheet(ub.book!)}
+        onDetails={(ub) => push({ name: 'book', book: ub.book! })}
+        onQuote={(ub) => openComposer('quote', ub.book!)}
       />
     </View>
   );
 };
 
-const styles = StyleSheet.create({
-  container: {
-    flex: 1,
-    backgroundColor: colors.background,
-  },
-  header: {
-    flexDirection: 'row',
-    justifyContent: 'space-between',
-    alignItems: 'center',
-    paddingHorizontal: 20,
-    paddingTop: 16,
-    paddingBottom: 14,
-    backgroundColor: colors.surfaceWarm,
-    borderBottomWidth: 1,
-    borderBottomColor: colors.borderLight,
-  },
-  title: {
-    fontSize: 24,
-    fontWeight: '700',
-    color: colors.text,
-    fontFamily: 'serif',
-  },
-  subtitle: {
-    fontSize: 13,
-    color: colors.textSecondary,
-    marginTop: 2,
-  },
-  addBtn: {
-    width: 40,
-    height: 40,
-    borderRadius: 20,
-    backgroundColor: colors.primary,
-    justifyContent: 'center',
-    alignItems: 'center',
-    shadowColor: colors.primaryDark,
-    shadowOffset: { width: 0, height: 2 },
-    shadowOpacity: 0.25,
-    shadowRadius: 4,
-    elevation: 3,
-  },
-  tabContainer: {
-    backgroundColor: colors.surfaceWarm,
-    paddingVertical: 10,
-    borderBottomWidth: 1,
-    borderBottomColor: colors.borderLight,
-  },
-  tabScroll: {
-    paddingHorizontal: 16,
-    gap: 8,
-  },
-  tabBtn: {
-    flexDirection: 'row',
-    alignItems: 'center',
-    backgroundColor: colors.surface,
-    paddingHorizontal: 12,
-    paddingVertical: 7,
-    borderRadius: 18,
-    borderWidth: 1,
-    borderColor: colors.border,
-    gap: 6,
-  },
-  tabBtnActive: {
-    backgroundColor: colors.primary,
-    borderColor: colors.primary,
-  },
-  tabText: {
-    color: colors.textSecondary,
-    fontSize: 13,
-    fontWeight: '600',
-  },
-  tabTextActive: {
-    color: colors.textInverse,
-    fontWeight: '700',
-  },
-  tabCountBadge: {
-    backgroundColor: colors.surfaceVariant,
-    paddingHorizontal: 6,
-    paddingVertical: 2,
-    borderRadius: 10,
-  },
-  tabCountBadgeActive: {
-    backgroundColor: 'rgba(255, 255, 255, 0.25)',
-  },
-  tabCountText: {
-    fontSize: 11,
-    fontWeight: '700',
-    color: colors.textSecondary,
-  },
-  tabCountTextActive: {
-    color: colors.textInverse,
-  },
-  shelvesContent: {
-    paddingTop: 16,
-    paddingBottom: 40,
-    paddingHorizontal: 16,
-    flexGrow: 1,
-  },
-  centerContainer: {
-    alignItems: 'center',
-    justifyContent: 'center',
-    paddingVertical: 60,
-  },
-  loadingText: {
-    marginTop: 12,
-    fontSize: 14,
-    color: colors.textSecondary,
-    fontFamily: 'serif',
-  },
-  bookcaseContainer: {
-    gap: 20,
-  },
-  shelfRow: {
-    marginBottom: 8,
-  },
-  booksOnShelf: {
-    flexDirection: 'row',
-    justifyContent: 'space-around',
-    alignItems: 'flex-end',
-    paddingHorizontal: 8,
-    paddingBottom: 0,
-    zIndex: 2,
-  },
-  bookSlot: {
-    alignItems: 'center',
-    width: BOOK_WIDTH + 10,
-  },
-  standingBookWrapper: {
-    marginBottom: 0,
-  },
-  bookSpineTitle: {
-    fontSize: 11,
-    fontWeight: '700',
-    color: colors.text,
-    fontFamily: 'serif',
-    textAlign: 'center',
-    marginTop: 6,
-    lineHeight: 14,
-  },
-  bookSpineAuthor: {
-    fontSize: 10,
-    color: colors.primary,
-    textAlign: 'center',
-    marginTop: 2,
-  },
-  woodenBeam: {
-    width: '100%',
-    marginTop: 4,
-    zIndex: 1,
-  },
-  beamTopHighlight: {
-    height: 3,
-    backgroundColor: '#734A2F',
-    borderTopLeftRadius: 2,
-    borderTopRightRadius: 2,
-  },
-  beamBody: {
-    height: 14,
-    backgroundColor: '#3E2415',
-    justifyContent: 'center',
-  },
-  woodGrainLine: {
-    height: 1,
-    backgroundColor: 'rgba(255, 255, 255, 0.08)',
-    width: '100%',
-  },
-  beamBottomShadow: {
-    height: 6,
-    backgroundColor: 'rgba(24, 13, 7, 0.45)',
-    borderBottomLeftRadius: 3,
-    borderBottomRightRadius: 3,
-  },
-  emptyCard: {
-    backgroundColor: colors.surface,
-    borderRadius: 16,
-    padding: 32,
-    alignItems: 'center',
-    borderWidth: 1,
-    borderColor: colors.border,
-    marginTop: 24,
-    shadowColor: colors.borderDark,
-    shadowOffset: { width: 0, height: 2 },
-    shadowOpacity: 0.08,
-    shadowRadius: 6,
-    elevation: 2,
-  },
-  emptyIconCircle: {
-    width: 68,
-    height: 68,
-    borderRadius: 34,
-    backgroundColor: colors.surfaceVariant,
-    justifyContent: 'center',
-    alignItems: 'center',
-    marginBottom: 16,
-    borderWidth: 1,
-    borderColor: colors.border,
-  },
-  emptyTitle: {
-    fontSize: 18,
-    fontWeight: '700',
-    color: colors.text,
-    fontFamily: 'serif',
-    marginBottom: 8,
-    textAlign: 'center',
-  },
-  emptySubtitle: {
-    fontSize: 13,
-    color: colors.textSecondary,
-    textAlign: 'center',
-    lineHeight: 20,
-    marginBottom: 22,
-    paddingHorizontal: 16,
-  },
-  actionBtn: {
-    flexDirection: 'row',
-    alignItems: 'center',
-    backgroundColor: colors.primary,
-    paddingHorizontal: 22,
-    paddingVertical: 12,
-    borderRadius: 10,
-    shadowColor: colors.primaryDark,
-    shadowOffset: { width: 0, height: 3 },
-    shadowOpacity: 0.25,
-    shadowRadius: 4,
-    elevation: 3,
-  },
-  actionBtnText: {
-    color: colors.textInverse,
-    fontWeight: '700',
-    fontSize: 14,
-  },
-});
+/* ------------------------------------------------------------------ */
+/* Raftan çekilen kitap: kapak dönerek öne gelir                       */
+/* ------------------------------------------------------------------ */
+const PulledBook: React.FC<{
+  userBook: UserBook | null;
+  onClose: () => void;
+  onUpdate: (ub: UserBook) => void;
+  onDetails: (ub: UserBook) => void;
+  onQuote: (ub: UserBook) => void;
+}> = ({ userBook, onClose, onUpdate, onDetails, onQuote }) => {
+  const { theme } = useTheme();
+  const s = useStyles(makeStyles);
+  const anim = useRef(new Animated.Value(0)).current;
+  const [current, setCurrent] = useState<UserBook | null>(null);
+
+  useEffect(() => {
+    if (userBook) {
+      setCurrent(userBook);
+      anim.setValue(0);
+      Animated.spring(anim, { toValue: 1, friction: 8, tension: 45, useNativeDriver }).start();
+    }
+  }, [userBook]);
+
+  const close = (after?: () => void) => {
+    Animated.timing(anim, { toValue: 0, duration: 240, easing: Easing.in(Easing.cubic), useNativeDriver }).start(() => {
+      setCurrent(null);
+      onClose();
+      after?.();
+    });
+  };
+
+  if (!current?.book) return null;
+  const b = current.book;
+  const c = statusColor(theme, current.status);
+  const Icon = STATUS_ICONS[current.status];
+  const progress = b.page_count ? (current.current_page || 0) / b.page_count : 0;
+
+  return (
+    <Modal visible transparent animationType="none" onRequestClose={() => close()} statusBarTranslucent>
+      <TouchableWithoutFeedback onPress={() => close()}>
+        <Animated.View style={[StyleSheet.absoluteFill, { backgroundColor: theme.overlay, opacity: anim }]} />
+      </TouchableWithoutFeedback>
+      <View style={s.pullWrap} pointerEvents="box-none">
+        <Animated.View
+          style={{
+            zIndex: 2,
+            position: 'relative',
+            transform: [
+              { perspective: 900 },
+              { translateY: anim.interpolate({ inputRange: [0, 1], outputRange: [160, 0] }) },
+              { rotateY: anim.interpolate({ inputRange: [0, 1], outputRange: ['88deg', '0deg'] }) },
+              { scale: anim.interpolate({ inputRange: [0, 1], outputRange: [0.5, 1] }) },
+            ],
+          }}
+        >
+          <BookCover url={b.thumbnail_url} title={b.title} author={b.authors?.[0]} width={170} standingShadow />
+        </Animated.View>
+
+        <Animated.View
+          style={[
+            s.pullCard,
+            {
+              opacity: anim,
+              transform: [{ translateY: anim.interpolate({ inputRange: [0, 1], outputRange: [60, 0] }) }],
+            },
+          ]}
+        >
+          <Pressable style={s.pullClose} onPress={() => close()} hitSlop={10}>
+            <X size={18} color={theme.textMuted} />
+          </Pressable>
+          <Text style={s.pullTitle} numberOfLines={2}>
+            {b.title}
+          </Text>
+          <Text style={s.pullAuthor} numberOfLines={1}>
+            {b.authors?.join(', ')}
+          </Text>
+          <View style={[s.statusPill, { backgroundColor: c + '22' }]}>
+            <Icon size={14} color={c} />
+            <Text style={[s.statusPillText, { color: c }]}>{USER_BOOK_STATUS_LABELS[current.status]}</Text>
+          </View>
+          {current.status === 'reading' && b.page_count ? (
+            <View style={{ width: '100%', marginTop: 14 }}>
+              <View style={s.progressRow}>
+                <Text style={s.progressText}>
+                  {current.current_page || 0} / {b.page_count} sayfa
+                </Text>
+                <Text style={[s.progressText, { color: theme.primary, fontWeight: '800' }]}>
+                  %{Math.round(progress * 100)}
+                </Text>
+              </View>
+              <ProgressBar value={progress} height={7} />
+            </View>
+          ) : null}
+
+          <View style={s.pullActions}>
+            <PressableScale style={[s.pullBtn, s.pullBtnPrimary]} onPress={() => close(() => onUpdate(current))}>
+              <BookOpenText size={17} color={theme.onPrimary} />
+              <Text style={[s.pullBtnText, { color: theme.onPrimary }]}>Durumu güncelle</Text>
+            </PressableScale>
+            <PressableScale style={s.pullBtnIcon} onPress={() => close(() => onQuote(current))} accessibilityLabel="Alıntı paylaş">
+              <Quote size={18} color={theme.text} />
+            </PressableScale>
+          </View>
+          <Pressable onPress={() => close(() => onDetails(current))} hitSlop={8}>
+            <Text style={s.detailsLink}>Kitap sayfasına git</Text>
+          </Pressable>
+        </Animated.View>
+      </View>
+    </Modal>
+  );
+};
+
+const makeStyles = (t: Theme) =>
+  StyleSheet.create({
+    container: { flex: 1, backgroundColor: t.bg },
+    scroll: { paddingBottom: 120 },
+    header: { flexDirection: 'row', alignItems: 'center', paddingHorizontal: 20, paddingTop: 12, paddingBottom: 6 },
+    title: { fontFamily: fonts.serif, fontSize: 30, fontWeight: '700', color: t.text },
+    subtitle: { fontSize: 13, color: t.textSoft, marginTop: 4 },
+    chips: { paddingHorizontal: 20, paddingVertical: 14, gap: 8 },
+    hint: { textAlign: 'center', color: t.textSoft, fontSize: 14, lineHeight: 20, paddingHorizontal: 36, marginTop: 18 },
+    addSlot: {
+      width: 64,
+      height: 118,
+      borderRadius: 6,
+      borderWidth: 1.5,
+      borderStyle: 'dashed',
+      borderColor: 'rgba(255,255,255,0.6)',
+      alignItems: 'center',
+      justifyContent: 'center',
+      gap: 6,
+      backgroundColor: 'rgba(255,255,255,0.12)',
+    },
+    addSlotText: { color: t.onPrimary, fontSize: 11, fontWeight: '700', textAlign: 'center' },
+    pullWrap: { flex: 1, alignItems: 'center', justifyContent: 'center', paddingHorizontal: 24 },
+    pullCard: {
+      marginTop: -30,
+      paddingTop: 44,
+      width: '100%',
+      maxWidth: 380,
+      backgroundColor: t.card,
+      borderRadius: radius.xl,
+      padding: 22,
+      alignItems: 'center',
+      position: 'relative',
+      zIndex: 1,
+    },
+    pullClose: { position: 'absolute', top: 14, right: 14 },
+    pullTitle: { fontFamily: fonts.serif, fontSize: 22, fontWeight: '700', color: t.text, textAlign: 'center' },
+    pullAuthor: { fontSize: 14, color: t.textSoft, marginTop: 4 },
+    statusPill: {
+      flexDirection: 'row',
+      alignItems: 'center',
+      gap: 6,
+      marginTop: 12,
+      paddingHorizontal: 12,
+      paddingVertical: 6,
+      borderRadius: radius.pill,
+    },
+    statusPillText: { fontSize: 13, fontWeight: '700' },
+    progressRow: { flexDirection: 'row', justifyContent: 'space-between', marginBottom: 6 },
+    progressText: { fontSize: 12, color: t.textSoft },
+    pullActions: { flexDirection: 'row', gap: 10, marginTop: 20, width: '100%' },
+    pullBtn: {
+      flex: 1,
+      height: 50,
+      borderRadius: radius.pill,
+      flexDirection: 'row',
+      alignItems: 'center',
+      justifyContent: 'center',
+      gap: 8,
+    },
+    pullBtnPrimary: { backgroundColor: t.primary },
+    pullBtnText: { fontSize: 15, fontWeight: '700', flexShrink: 1 },
+    pullBtnIcon: {
+      width: 50,
+      height: 50,
+      borderRadius: 25,
+      backgroundColor: t.cardAlt,
+      alignItems: 'center',
+      justifyContent: 'center',
+    },
+    detailsLink: { marginTop: 14, color: t.primary, fontWeight: '700', fontSize: 14 },
+  });

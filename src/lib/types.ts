@@ -31,14 +31,21 @@ export interface Book {
   created_at?: string;
 }
 
-export type UserBookStatus = 'want_to_read' | 'reading' | 'completed' | 'dropped';
+export type UserBookStatus = 'want_to_read' | 'reading' | 'read' | 'dropped';
 
 export const USER_BOOK_STATUS_LABELS: Record<UserBookStatus, string> = {
-  want_to_read: 'Kitaplıkta / Başlamadım',
+  want_to_read: 'Okuyacağım',
   reading: 'Okuyorum',
-  completed: 'Okudum',
+  read: 'Okudum',
   dropped: 'Yarım Bıraktım',
 };
+
+export const USER_BOOK_STATUS_ORDER: UserBookStatus[] = [
+  'want_to_read',
+  'reading',
+  'read',
+  'dropped',
+];
 
 export interface UserBook {
   id: string;
@@ -60,9 +67,28 @@ export type PostType = 'quote' | 'review' | 'reading_update' | 'thought';
 export const POST_TYPE_LABELS: Record<PostType, string> = {
   quote: 'Alıntı',
   review: 'İnceleme',
-  reading_update: 'Okuma Durumu',
-  thought: 'Serbest İleti',
+  reading_update: 'Kitap Kaydı',
+  thought: 'İleti',
 };
+
+export interface ProfileStats {
+  books: number;
+  followers: number;
+  following: number;
+  reviews: number;
+  quotes: number;
+  thoughts: number;
+  readingUpdates: number;
+  completedThisYear: number;
+}
+
+export interface AuthorResult {
+  name: string;
+  key: string | null;
+  topWork: string | null;
+  workCount: number | null;
+  photoUrl: string | null;
+}
 
 export interface Post {
   id: string;

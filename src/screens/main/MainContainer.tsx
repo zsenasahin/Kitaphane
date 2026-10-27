@@ -1,617 +1,513 @@
-import React, { useState, useRef, useEffect } from 'react';
+import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import {
-  View,
-  Text,
-  StyleSheet,
-  TouchableOpacity,
-  TouchableWithoutFeedback,
-  Platform,
   Animated,
+  BackHandler,
   Easing,
-  Modal,
+  Pressable,
+  StyleSheet,
+  Text,
+  TouchableWithoutFeedback,
+  useWindowDimensions,
+  View,
 } from 'react-native';
-import { SafeAreaView } from 'react-native-safe-area-context';
-import {
-  Home,
-  Search,
-  BookMarked,
-  User,
-  Plus,
-  Quote,
-  Star,
-  BookOpen,
-  Feather,
-  ChevronRight,
-} from 'lucide-react-native';
-import { colors } from '../../theme/colors';
-import { Book } from '../../lib/types';
+import { useSafeAreaInsets } from 'react-native-safe-area-context';
+import { House, Library, Plus, Search, UserRound } from 'lucide-react-native';
+import { AppContext, AppContextType, DataVersions, Route, TabName } from '../../context/AppContext';
+import { useStyles, useTheme } from '../../context/ThemeContext';
+import { Book, PostType } from '../../lib/types';
+import { fonts, radius, shadow, Theme } from '../../theme/themes';
+import { useNativeDriver } from '../../components/ui';
+import { StatusSheet } from '../../components/StatusSheet';
 import { HomeScreen } from './HomeScreen';
 import { SearchScreen } from './SearchScreen';
 import { LibraryScreen } from './LibraryScreen';
 import { ProfileScreen } from './ProfileScreen';
+import { BookDetailScreen } from './BookDetailScreen';
+import { AuthorScreen } from './AuthorScreen';
+import { FollowsScreen } from './FollowsScreen';
+import { SettingsScreen } from './SettingsScreen';
+import { EditProfileScreen } from './EditProfileScreen';
+import { COMPOSE_TYPES, ComposerModal } from './ComposerModal';
 
-// Paylaşım Modalları
-import { CreateQuoteModal } from './modals/CreateQuoteModal';
-import { CreateReviewModal } from './modals/CreateReviewModal';
-import { CreateReadingUpdateModal } from './modals/CreateReadingUpdateModal';
-import { CreateThoughtModal } from './modals/CreateThoughtModal';
+const BAR_HEIGHT = 66;
+const FAB = 58;
+// Menü öğesinin alt kenarından daire merkezine uzaklık (daire 64 + etiket)
+const ITEM_CIRCLE_OFFSET = 55;
 
-type Tab = 'home' | 'search' | 'library' | 'profile';
+const TABS: { id: TabName; label: string; icon: React.FC<{ size?: number; color?: string; strokeWidth?: number }> }[] = [
+  { id: 'home', label: 'Anasayfa', icon: House },
+  { id: 'search', label: 'Arama', icon: Search },
+  { id: 'library', label: 'Kitaplık', icon: Library },
+  { id: 'profile', label: 'Profil', icon: UserRound },
+];
+
+interface StackEntry {
+  key: number;
+  route: Route;
+}
 
 export const MainContainer: React.FC = () => {
-  const [activeTab, setActiveTab] = useState<Tab>('home');
-  const [isMenuOpen, setIsMenuOpen] = useState(false);
+  const { theme } = useTheme();
+  const s = useStyles(makeStyles);
+  const insets = useSafeAreaInsets();
+  const { width } = useWindowDimensions();
 
-  // Paylaşım Modalları Görünürlük Durumları
-  const [quoteModalVisible, setQuoteModalVisible] = useState(false);
-  const [reviewModalVisible, setReviewModalVisible] = useState(false);
-  const [readingUpdateModalVisible, setReadingUpdateModalVisible] = useState(false);
-  const [thoughtModalVisible, setThoughtModalVisible] = useState(false);
-  const [preSelectedBook, setPreSelectedBook] = useState<Book | null>(null);
-
-  // Animasyon Değerleri
-  const plusRotation = useRef(new Animated.Value(0)).current;
-  const overlayOpacity = useRef(new Animated.Value(0)).current;
-  const cardAnims = [
-    useRef(new Animated.Value(0)).current,
-    useRef(new Animated.Value(0)).current,
-    useRef(new Animated.Value(0)).current,
-    useRef(new Animated.Value(0)).current,
-  ];
-
-  const openMenu = () => {
-    setIsMenuOpen(true);
-
-    // 1. Artı butonu dönüş animasyonu (+ -> ×)
-    Animated.spring(plusRotation, {
-      toValue: 1,
-      tension: 60,
-      friction: 6,
-      useNativeDriver: Platform.OS !== 'web',
-    }).start();
-
-    // 2. Karartma arka planı
-    Animated.timing(overlayOpacity, {
-      toValue: 1,
-      duration: 220,
-      useNativeDriver: Platform.OS !== 'web',
-    }).start();
-
-    // 3. 4 Kart için sırayla yumuşak yaylanma animasyonu (Staggered spring)
-    const staggerAnimations = cardAnims.map((anim) =>
-      Animated.spring(anim, {
-        toValue: 1,
-        tension: 55,
-        friction: 7,
-        useNativeDriver: Platform.OS !== 'web',
-      })
-    );
-    Animated.stagger(50, staggerAnimations).start();
-  };
-
-  const closeMenu = (callback?: () => void) => {
-    // 1. Artı butonu geri dönüşü (× -> +)
-    Animated.timing(plusRotation, {
-      toValue: 0,
-      duration: 200,
-      easing: Easing.ease,
-      useNativeDriver: Platform.OS !== 'web',
-    }).start();
-
-    // 2. Kartların aşağı kayması ve kaybolması
-    Animated.timing(overlayOpacity, {
-      toValue: 0,
-      duration: 180,
-      useNativeDriver: Platform.OS !== 'web',
-    }).start();
-
-    const reverseAnimations = cardAnims.map((anim) =>
-      Animated.timing(anim, {
-        toValue: 0,
-        duration: 160,
-        useNativeDriver: Platform.OS !== 'web',
-      })
-    );
-
-    Animated.parallel(reverseAnimations).start(() => {
-      setIsMenuOpen(false);
-      callback?.();
-    });
-  };
-
-  const toggleMenu = () => {
-    if (isMenuOpen) {
-      closeMenu();
-    } else {
-      openMenu();
-    }
-  };
-
-  // Kart tıklandığında menüyü kapatıp ilgili modalı aç
-  const handleSelectOption = (
-    action: 'quote' | 'review' | 'reading_update' | 'thought'
-  ) => {
-    closeMenu(() => {
-      setPreSelectedBook(null);
-      if (action === 'quote') setQuoteModalVisible(true);
-      if (action === 'review') setReviewModalVisible(true);
-      if (action === 'reading_update') setReadingUpdateModalVisible(true);
-      if (action === 'thought') setThoughtModalVisible(true);
-    });
-  };
-
-  const spinInterpolation = plusRotation.interpolate({
-    inputRange: [0, 1],
-    outputRange: ['0deg', '45deg'],
+  const [tab, setTab] = useState<TabName>('home');
+  const [visited, setVisited] = useState<Set<TabName>>(new Set(['home']));
+  const [stack, setStack] = useState<StackEntry[]>([]);
+  const [versions, setVersions] = useState<DataVersions>({ library: 0, posts: 0, profile: 0 });
+  const [menuOpen, setMenuOpen] = useState(false);
+  const [composer, setComposer] = useState<{ visible: boolean; type: PostType; book: Book | null }>({
+    visible: false,
+    type: 'quote',
+    book: null,
   });
+  const [statusBook, setStatusBook] = useState<Book | null>(null);
+  const keyRef = useRef(0);
+  const popRef = useRef<Map<number, () => void>>(new Map());
 
-  const [feedRefreshKey, setFeedRefreshKey] = useState(0);
-  const [libraryRefreshKey, setLibraryRefreshKey] = useState(0);
+  const goTab = useCallback((t: TabName) => {
+    setStack([]);
+    setTab(t);
+    setVisited((v) => (v.has(t) ? v : new Set(v).add(t)));
+  }, []);
 
-  const refreshAll = () => {
-    setFeedRefreshKey((prev) => prev + 1);
-    setLibraryRefreshKey((prev) => prev + 1);
-  };
+  const push = useCallback((route: Route) => {
+    setStack((st) => [...st, { key: ++keyRef.current, route }]);
+  }, []);
 
-  const renderCurrentScreen = () => {
-    switch (activeTab) {
-      case 'home':
-        return (
-          <HomeScreen
-            key={`home_${feedRefreshKey}`}
-            onNavigateToSearch={() => setActiveTab('search')}
-            onOpenCreateMenu={openMenu}
-          />
-        );
-      case 'search':
-        return (
-          <SearchScreen
-            onShareQuoteRequest={(b) => {
-              setPreSelectedBook(b);
-              setQuoteModalVisible(true);
-            }}
-            onShareReviewRequest={(b) => {
-              setPreSelectedBook(b);
-              setReviewModalVisible(true);
-            }}
-          />
-        );
-      case 'library':
-        return (
-          <LibraryScreen
-            key={`lib_${libraryRefreshKey}`}
-            onNavigateToSearch={() => setActiveTab('search')}
-            onShareQuoteRequest={(b) => {
-              setPreSelectedBook(b);
-              setQuoteModalVisible(true);
-            }}
-            onShareReviewRequest={(b) => {
-              setPreSelectedBook(b);
-              setReviewModalVisible(true);
-            }}
-          />
-        );
+  // Üstteki sayfa kayarak kapanır, ardından yığından çıkarılır
+  const pop = useCallback(() => {
+    setStack((st) => {
+      const top = st[st.length - 1];
+      if (top) popRef.current.get(top.key)?.();
+      return st;
+    });
+  }, []);
+
+  const removeEntry = useCallback((key: number) => {
+    popRef.current.delete(key);
+    setStack((st) => st.filter((e) => e.key !== key));
+  }, []);
+
+  const bump = useCallback((...kinds: Array<keyof DataVersions>) => {
+    setVersions((v) => {
+      const next = { ...v };
+      kinds.forEach((k) => (next[k] += 1));
+      return next;
+    });
+  }, []);
+
+  const openComposer = useCallback((type: PostType = 'quote', book: Book | null = null) => {
+    setMenuOpen(false);
+    setComposer({ visible: true, type, book });
+  }, []);
+
+  const openStatusSheet = useCallback((book: Book) => setStatusBook(book), []);
+
+  const ctx: AppContextType = useMemo(
+    () => ({ push, pop, goTab, openComposer, openStatusSheet, versions, bump }),
+    [push, pop, goTab, openComposer, openStatusSheet, versions, bump]
+  );
+
+  // Android geri tuşu
+  useEffect(() => {
+    const sub = BackHandler.addEventListener('hardwareBackPress', () => {
+      if (menuOpen) {
+        setMenuOpen(false);
+        return true;
+      }
+      if (stack.length > 0) {
+        pop();
+        return true;
+      }
+      if (tab !== 'home') {
+        goTab('home');
+        return true;
+      }
+      return false;
+    });
+    return () => sub.remove();
+  }, [menuOpen, stack.length, tab]);
+
+  const renderRoute = (route: Route, onBack: () => void) => {
+    switch (route.name) {
+      case 'book':
+        return <BookDetailScreen book={route.book} onBack={onBack} />;
       case 'profile':
-        return <ProfileScreen />;
-      default:
-        return <HomeScreen />;
+        return <ProfileScreen userId={route.userId} onBack={onBack} />;
+      case 'author':
+        return <AuthorScreen author={route.author} authorKey={route.authorKey} onBack={onBack} />;
+      case 'follows':
+        return <FollowsScreen userId={route.userId} mode={route.mode} onBack={onBack} />;
+      case 'settings':
+        return <SettingsScreen onBack={onBack} />;
+      case 'editProfile':
+        return <EditProfileScreen onBack={onBack} />;
     }
   };
 
-  const menuOptions = [
-    {
-      id: 'quote',
-      title: 'Alıntı Paylaş',
-      desc: 'Kitabından altını çizdiğin bir cümleyi ölümsüzleştir',
-      icon: <Quote size={20} color={colors.goldDark} />,
-      iconBg: colors.goldLight,
-      action: () => handleSelectOption('quote'),
-    },
-    {
-      id: 'review',
-      title: 'İnceleme Paylaş',
-      desc: 'Okuduğun kitabı puanla ve edebî eleştirini yaz',
-      icon: <Star size={20} color={colors.primary} fill={colors.gold} />,
-      iconBg: 'rgba(197, 160, 89, 0.2)',
-      action: () => handleSelectOption('review'),
-    },
-    {
-      id: 'reading_update',
-      title: 'Kitap Kaydı Paylaş',
-      desc: 'Okumaya başladığın veya bitirdiğin kitabı akışta duyur',
-      icon: <BookOpen size={20} color={colors.primary} />,
-      iconBg: colors.surfaceVariant,
-      action: () => handleSelectOption('reading_update'),
-    },
-    {
-      id: 'thought',
-      title: 'Serbest İleti Paylaş',
-      desc: 'Edebiyat ve kitaplar üzerine özgürce düşüncelerini aktar',
-      icon: <Feather size={20} color={colors.textSecondary} />,
-      iconBg: colors.surfaceHighlight,
-      action: () => handleSelectOption('thought'),
-    },
-  ];
+  const barBottom = Math.max(insets.bottom, 12);
 
   return (
-    <SafeAreaView style={styles.safeArea}>
-      <View style={styles.body}>{renderCurrentScreen()}</View>
-
-      {/* Karartma Arka Planı & 4 Kartlı Paylaşım Menüsü */}
-      {isMenuOpen && (
-        <View style={styles.menuOverlayContainer}>
-          <TouchableWithoutFeedback onPress={() => closeMenu()}>
-            <Animated.View
-              style={[
-                styles.backdrop,
-                {
-                  opacity: overlayOpacity.interpolate({
-                    inputRange: [0, 1],
-                    outputRange: [0, 0.65],
-                  }),
-                },
-              ]}
-            />
-          </TouchableWithoutFeedback>
-
-          {/* 4 Kart Listesi */}
-          <View style={styles.cardsContainer} pointerEvents="box-none">
-            {menuOptions.map((opt, idx) => {
-              const anim = cardAnims[idx];
-              const translateY = anim.interpolate({
-                inputRange: [0, 1],
-                outputRange: [60 + idx * 25, 0],
-              });
-              const scale = anim.interpolate({
-                inputRange: [0, 1],
-                outputRange: [0.85, 1],
-              });
-              const opacity = anim.interpolate({
-                inputRange: [0, 1],
-                outputRange: [0, 1],
-              });
-
-              return (
-                <Animated.View
-                  key={opt.id}
-                  style={[
-                    styles.cardWrapper,
-                    {
-                      opacity,
-                      transform: [{ translateY }, { scale }],
-                    },
-                  ]}
-                >
-                  <TouchableOpacity
-                    style={styles.menuCard}
-                    activeOpacity={0.8}
-                    onPress={opt.action}
-                  >
-                    <View
-                      style={[styles.menuIconCircle, { backgroundColor: opt.iconBg }]}
-                    >
-                      {opt.icon}
-                    </View>
-                    <View style={styles.menuCardTextContainer}>
-                      <Text style={styles.menuCardTitle}>{opt.title}</Text>
-                      <Text style={styles.menuCardDesc} numberOfLines={1}>
-                        {opt.desc}
-                      </Text>
-                    </View>
-                    <ChevronRight size={18} color={colors.textTertiary} />
-                  </TouchableOpacity>
-                </Animated.View>
-              );
-            })}
-          </View>
-        </View>
-      )}
-
-      {/* Alt App Bar (Bottom Navigation) */}
-      <View style={styles.bottomBar}>
-        {/* Anasayfa */}
-        <TouchableOpacity
-          activeOpacity={0.7}
-          onPress={() => setActiveTab('home')}
-          style={styles.tabButton}
-        >
-          <View
-            style={[
-              styles.iconWrapper,
-              activeTab === 'home' && styles.iconWrapperActive,
-            ]}
-          >
-            <Home
-              size={22}
-              color={activeTab === 'home' ? colors.primary : colors.textTertiary}
-            />
-          </View>
-          <Text
-            style={[
-              styles.tabLabel,
-              activeTab === 'home' && styles.tabLabelActive,
-            ]}
-          >
-            Anasayfa
-          </Text>
-        </TouchableOpacity>
-
-        {/* Arama */}
-        <TouchableOpacity
-          activeOpacity={0.7}
-          onPress={() => setActiveTab('search')}
-          style={styles.tabButton}
-        >
-          <View
-            style={[
-              styles.iconWrapper,
-              activeTab === 'search' && styles.iconWrapperActive,
-            ]}
-          >
-            <Search
-              size={22}
-              color={activeTab === 'search' ? colors.primary : colors.textTertiary}
-            />
-          </View>
-          <Text
-            style={[
-              styles.tabLabel,
-              activeTab === 'search' && styles.tabLabelActive,
-            ]}
-          >
-            Arama
-          </Text>
-        </TouchableOpacity>
-
-        {/* Ortadaki Öne Çıkan + Butonu */}
-        <View style={styles.centerButtonContainer}>
-          <TouchableOpacity
-            activeOpacity={0.85}
-            onPress={toggleMenu}
-            style={[styles.floatingPlusBtn, isMenuOpen && styles.floatingPlusBtnActive]}
-          >
-            <Animated.View
-              style={{
-                transform: [{ rotate: spinInterpolation }],
-              }}
-            >
-              <Plus size={26} color={colors.textInverse} />
-            </Animated.View>
-          </TouchableOpacity>
+    <AppContext.Provider value={ctx}>
+      <View style={s.root}>
+        {/* Sekmeler (ziyaret edilenler canlı tutulur) */}
+        <View style={s.screens}>
+          {(['home', 'search', 'library', 'profile'] as TabName[]).map((t) =>
+            visited.has(t) ? (
+              <View
+                key={t}
+                style={[StyleSheet.absoluteFill, { top: t === 'profile' ? 0 : insets.top }, t !== tab && s.hidden]}
+              >
+                {t === 'home' && <HomeScreen />}
+                {t === 'search' && <SearchScreen />}
+                {t === 'library' && <LibraryScreen />}
+                {t === 'profile' && <ProfileScreen />}
+              </View>
+            ) : null
+          )}
         </View>
 
-        {/* Kitaplık */}
-        <TouchableOpacity
-          activeOpacity={0.7}
-          onPress={() => setActiveTab('library')}
-          style={styles.tabButton}
-        >
-          <View
-            style={[
-              styles.iconWrapper,
-              activeTab === 'library' && styles.iconWrapperActive,
-            ]}
-          >
-            <BookMarked
-              size={22}
-              color={activeTab === 'library' ? colors.primary : colors.textTertiary}
-            />
-          </View>
-          <Text
-            style={[
-              styles.tabLabel,
-              activeTab === 'library' && styles.tabLabelActive,
-            ]}
-          >
-            Kitaplık
-          </Text>
-        </TouchableOpacity>
+        {/* Alt bar */}
+        <View style={[s.bar, { bottom: barBottom }]}>
+          {TABS.slice(0, 2).map((t) => (
+            <TabButton key={t.id} item={t} active={tab === t.id && stack.length === 0} onPress={() => goTab(t.id)} />
+          ))}
+          <View style={{ width: FAB + 16 }} />
+          {TABS.slice(2).map((t) => (
+            <TabButton key={t.id} item={t} active={tab === t.id && stack.length === 0} onPress={() => goTab(t.id)} />
+          ))}
+        </View>
 
-        {/* Profil */}
-        <TouchableOpacity
-          activeOpacity={0.7}
-          onPress={() => setActiveTab('profile')}
-          style={styles.tabButton}
-        >
-          <View
-            style={[
-              styles.iconWrapper,
-              activeTab === 'profile' && styles.iconWrapperActive,
-            ]}
+        {/* Paylaşım menüsü */}
+        <ComposeMenu
+          open={menuOpen}
+          onClose={() => setMenuOpen(false)}
+          onSelect={(type) => openComposer(type)}
+          fabBottom={barBottom + BAR_HEIGHT / 2 - FAB / 2 + 14}
+          width={width}
+        />
+        <Fab open={menuOpen} onPress={() => setMenuOpen((o) => !o)} bottom={barBottom + BAR_HEIGHT / 2 - FAB / 2 + 14} />
+
+        {/* Sayfa yığını */}
+        {stack.map((entry) => (
+          <StackPage
+            key={entry.key}
+            width={width}
+            register={(fn) => popRef.current.set(entry.key, fn)}
+            onClosed={() => removeEntry(entry.key)}
           >
-            <User
-              size={22}
-              color={activeTab === 'profile' ? colors.primary : colors.textTertiary}
-            />
-          </View>
-          <Text
-            style={[
-              styles.tabLabel,
-              activeTab === 'profile' && styles.tabLabelActive,
-            ]}
-          >
-            Profil
-          </Text>
-        </TouchableOpacity>
+            {(close) => renderRoute(entry.route, close)}
+          </StackPage>
+        ))}
+
+        <ComposerModal
+          visible={composer.visible}
+          initialType={composer.type}
+          initialBook={composer.book}
+          onClose={() => setComposer((c) => ({ ...c, visible: false }))}
+          onPosted={() => {
+            bump('posts', 'profile', 'library');
+            if (stack.length === 0) goTab('home');
+          }}
+        />
+        <StatusSheet
+          book={statusBook}
+          onClose={() => setStatusBook(null)}
+          onChanged={() => bump('library', 'profile', 'posts')}
+        />
       </View>
-
-      {/* Paylaşım Modalları */}
-      <CreateQuoteModal
-        visible={quoteModalVisible}
-        initialBook={preSelectedBook}
-        onClose={() => setQuoteModalVisible(false)}
-        onPostCreated={() => {
-          refreshAll();
-          setActiveTab('home');
-        }}
-      />
-
-      <CreateReviewModal
-        visible={reviewModalVisible}
-        initialBook={preSelectedBook}
-        onClose={() => setReviewModalVisible(false)}
-        onPostCreated={() => {
-          refreshAll();
-          setActiveTab('home');
-        }}
-      />
-
-      <CreateReadingUpdateModal
-        visible={readingUpdateModalVisible}
-        initialBook={preSelectedBook}
-        onClose={() => setReadingUpdateModalVisible(false)}
-        onPostCreated={() => {
-          refreshAll();
-          setActiveTab('home');
-        }}
-      />
-
-      <CreateThoughtModal
-        visible={thoughtModalVisible}
-        onClose={() => setThoughtModalVisible(false)}
-        onPostCreated={() => {
-          refreshAll();
-          setActiveTab('home');
-        }}
-      />
-    </SafeAreaView>
+    </AppContext.Provider>
   );
 };
 
-const styles = StyleSheet.create({
-  safeArea: {
-    flex: 1,
-    backgroundColor: colors.background,
-  },
-  body: {
-    flex: 1,
-  },
-  bottomBar: {
-    flexDirection: 'row',
-    backgroundColor: colors.surfaceWarm,
-    borderTopWidth: 1,
-    borderTopColor: colors.borderLight,
-    paddingTop: 8,
-    paddingBottom: Platform.OS === 'ios' ? 12 : 14,
-    justifyContent: 'space-around',
-    alignItems: 'center',
-    shadowColor: colors.leatherDark,
-    shadowOffset: { width: 0, height: -3 },
-    shadowOpacity: 0.1,
-    shadowRadius: 8,
-    elevation: 8,
-    zIndex: 10,
-  },
-  tabButton: {
-    alignItems: 'center',
-    justifyContent: 'center',
-    flex: 1,
-  },
-  iconWrapper: {
-    width: 38,
-    height: 30,
-    borderRadius: 15,
-    justifyContent: 'center',
-    alignItems: 'center',
-    marginBottom: 3,
-  },
-  iconWrapperActive: {
-    backgroundColor: 'rgba(92, 52, 26, 0.08)',
-  },
-  tabLabel: {
-    fontSize: 11,
-    fontWeight: '500',
-    color: colors.textTertiary,
-  },
-  tabLabelActive: {
-    color: colors.primary,
-    fontWeight: '700',
-  },
-  centerButtonContainer: {
-    alignItems: 'center',
-    justifyContent: 'center',
-    flex: 1,
-    marginTop: -22,
-  },
-  floatingPlusBtn: {
-    width: 52,
-    height: 52,
-    borderRadius: 26,
-    backgroundColor: colors.primary,
-    justifyContent: 'center',
-    alignItems: 'center',
-    shadowColor: colors.primaryDark,
-    shadowOffset: { width: 0, height: 4 },
-    shadowOpacity: 0.35,
-    shadowRadius: 6,
-    elevation: 8,
-    borderWidth: 3,
-    borderColor: colors.surfaceWarm,
-  },
-  floatingPlusBtnActive: {
-    backgroundColor: colors.leatherDark,
-  },
-  menuOverlayContainer: {
-    position: 'absolute',
-    top: 0,
-    left: 0,
-    right: 0,
-    bottom: 0,
-    zIndex: 9,
-    justifyContent: 'flex-end',
-  },
-  backdrop: {
-    position: 'absolute',
-    top: 0,
-    left: 0,
-    right: 0,
-    bottom: 0,
-    backgroundColor: '#1E120A',
-  },
-  cardsContainer: {
-    paddingHorizontal: 20,
-    paddingBottom: Platform.OS === 'ios' ? 84 : 76,
-    gap: 12,
-  },
-  cardWrapper: {
-    width: '100%',
-  },
-  menuCard: {
-    flexDirection: 'row',
-    alignItems: 'center',
-    backgroundColor: colors.surface,
-    paddingVertical: 14,
-    paddingHorizontal: 16,
-    borderRadius: 16,
-    borderWidth: 1,
-    borderColor: colors.borderLight,
-    shadowColor: colors.leatherDark,
-    shadowOffset: { width: 0, height: 4 },
-    shadowOpacity: 0.18,
-    shadowRadius: 8,
-    elevation: 6,
-  },
-  menuIconCircle: {
-    width: 44,
-    height: 44,
-    borderRadius: 22,
-    justifyContent: 'center',
-    alignItems: 'center',
-    marginRight: 14,
-  },
-  menuCardTextContainer: {
-    flex: 1,
-  },
-  menuCardTitle: {
-    fontSize: 15,
-    fontWeight: '700',
-    color: colors.text,
-    fontFamily: 'serif',
-    marginBottom: 3,
-  },
-  menuCardDesc: {
-    fontSize: 12,
-    color: colors.textSecondary,
-    lineHeight: 16,
-  },
-});
+/* ------------------------------------------------------------------ */
+const TabButton: React.FC<{
+  item: (typeof TABS)[number];
+  active: boolean;
+  onPress: () => void;
+}> = ({ item, active, onPress }) => {
+  const { theme } = useTheme();
+  const s = useStyles(makeStyles);
+  const anim = useRef(new Animated.Value(active ? 1 : 0)).current;
+  useEffect(() => {
+    Animated.spring(anim, { toValue: active ? 1 : 0, friction: 7, tension: 120, useNativeDriver }).start();
+  }, [active]);
+  const Icon = item.icon;
+  return (
+    <Pressable onPress={onPress} style={s.tab} accessibilityRole="tab" accessibilityLabel={item.label} accessibilityState={{ selected: active }}>
+      <Animated.View
+        style={[
+          s.tabPill,
+          {
+            opacity: anim,
+            transform: [{ scaleX: anim.interpolate({ inputRange: [0, 1], outputRange: [0.4, 1] }) }],
+          },
+        ]}
+      />
+      <Animated.View style={{ transform: [{ translateY: anim.interpolate({ inputRange: [0, 1], outputRange: [6, 0] }) }] }}>
+        <Icon size={22} color={active ? theme.primary : theme.textMuted} strokeWidth={active ? 2.4 : 2} />
+      </Animated.View>
+      <Animated.Text
+        style={[
+          s.tabLabel,
+          {
+            opacity: anim,
+            transform: [{ scale: anim.interpolate({ inputRange: [0, 1], outputRange: [0.6, 1] }) }],
+          },
+        ]}
+        numberOfLines={1}
+      >
+        {item.label}
+      </Animated.Text>
+    </Pressable>
+  );
+};
+
+/* ------------------------------------------------------------------ */
+/* Ortadaki + butonu                                                   */
+/* ------------------------------------------------------------------ */
+const Fab: React.FC<{ open: boolean; onPress: () => void; bottom: number }> = ({ open, onPress, bottom }) => {
+  const { theme } = useTheme();
+  const s = useStyles(makeStyles);
+  const rot = useRef(new Animated.Value(0)).current;
+  const press = useRef(new Animated.Value(1)).current;
+  useEffect(() => {
+    Animated.spring(rot, { toValue: open ? 1 : 0, friction: 6, tension: 90, useNativeDriver }).start();
+  }, [open]);
+  return (
+    <View style={[s.fabWrap, { bottom }]} pointerEvents="box-none">
+      <Pressable
+        onPress={onPress}
+        onPressIn={() => Animated.spring(press, { toValue: 0.9, useNativeDriver, friction: 6, tension: 200 }).start()}
+        onPressOut={() => Animated.spring(press, { toValue: 1, useNativeDriver, friction: 4, tension: 160 }).start()}
+        accessibilityRole="button"
+        accessibilityLabel={open ? 'Menüyü kapat' : 'Yeni paylaşım'}
+      >
+        <Animated.View
+          style={[
+            s.fab,
+            {
+              backgroundColor: theme.primary,
+              transform: [
+                { scale: press },
+                { rotate: rot.interpolate({ inputRange: [0, 1], outputRange: ['0deg', '135deg'] }) },
+              ],
+            },
+          ]}
+        >
+          <Plus size={28} color={theme.onPrimary} strokeWidth={2.6} />
+        </Animated.View>
+      </Pressable>
+    </View>
+  );
+};
+
+/* ------------------------------------------------------------------ */
+/* + butonundan yay şeklinde açılan paylaşım seçenekleri               */
+/* ------------------------------------------------------------------ */
+const ComposeMenu: React.FC<{
+  open: boolean;
+  onClose: () => void;
+  onSelect: (t: PostType) => void;
+  fabBottom: number;
+  width: number;
+}> = ({ open, onClose, onSelect, fabBottom, width }) => {
+  const { theme } = useTheme();
+  const s = useStyles(makeStyles);
+  const backdrop = useRef(new Animated.Value(0)).current;
+  const items = useRef(COMPOSE_TYPES.map(() => new Animated.Value(0))).current;
+  const [mounted, setMounted] = useState(false);
+
+  useEffect(() => {
+    if (open) {
+      setMounted(true);
+      Animated.parallel([
+        Animated.timing(backdrop, { toValue: 1, duration: 220, useNativeDriver }),
+        Animated.stagger(
+          55,
+          items.map((v) => Animated.spring(v, { toValue: 1, friction: 6, tension: 70, useNativeDriver }))
+        ),
+      ]).start();
+    } else if (mounted) {
+      Animated.parallel([
+        Animated.timing(backdrop, { toValue: 0, duration: 200, useNativeDriver }),
+        ...items.map((v) => Animated.timing(v, { toValue: 0, duration: 160, easing: Easing.in(Easing.quad), useNativeDriver })),
+      ]).start(() => setMounted(false));
+    }
+  }, [open]);
+
+  if (!mounted) return null;
+
+  // Yay üzerindeki konumlar (+ butonunun merkezine göre)
+  const R = Math.min(140, width * 0.34);
+  const LIFT = 64; // yayın merkezini + butonunun biraz üstüne taşır
+  const angles = [162, 120, 60, 18];
+  const tints: Record<PostType, string> = {
+    quote: theme.quoteBg,
+    review: theme.reviewBg,
+    reading_update: theme.updateBg,
+    thought: theme.accentSoft,
+  };
+  const centerY = fabBottom + FAB / 2;
+
+  return (
+    <View style={StyleSheet.absoluteFill} pointerEvents="box-none">
+      <TouchableWithoutFeedback onPress={onClose}>
+        <Animated.View style={[StyleSheet.absoluteFill, { backgroundColor: theme.overlay, opacity: backdrop }]} />
+      </TouchableWithoutFeedback>
+
+      <Animated.Text
+        style={[
+          s.menuTitle,
+          {
+            bottom: centerY + LIFT + R + 50,
+            opacity: backdrop,
+            transform: [{ translateY: backdrop.interpolate({ inputRange: [0, 1], outputRange: [20, 0] }) }],
+          },
+        ]}
+      >
+        Ne paylaşmak istersin?
+      </Animated.Text>
+
+      {COMPOSE_TYPES.map((ct, i) => {
+        const a = (angles[i] * Math.PI) / 180;
+        const dx = Math.cos(a) * R;
+        const dy = Math.sin(a) * R + LIFT;
+        const v = items[i];
+        return (
+          <Animated.View
+            key={ct.id}
+            style={[
+              s.menuItem,
+              {
+                left: width / 2 - 48,
+                bottom: centerY - ITEM_CIRCLE_OFFSET,
+                opacity: v,
+                transform: [
+                  { translateX: v.interpolate({ inputRange: [0, 1], outputRange: [0, dx] }) },
+                  { translateY: v.interpolate({ inputRange: [0, 1], outputRange: [0, -dy] }) },
+                  { scale: v.interpolate({ inputRange: [0, 1], outputRange: [0.3, 1] }) },
+                ],
+              },
+            ]}
+          >
+            <Pressable onPress={() => onSelect(ct.id)} style={{ alignItems: 'center' }} accessibilityRole="button" accessibilityLabel={ct.label}>
+              <View style={[s.menuCircle, { backgroundColor: tints[ct.id] }]}>
+                <ct.icon size={26} color={theme.text} />
+              </View>
+              <Text style={s.menuLabel}>{ct.label}</Text>
+            </Pressable>
+          </Animated.View>
+        );
+      })}
+    </View>
+  );
+};
+
+/* ------------------------------------------------------------------ */
+/* Sağdan kayarak açılan sayfa                                         */
+/* ------------------------------------------------------------------ */
+const StackPage: React.FC<{
+  width: number;
+  register: (close: () => void) => void;
+  onClosed: () => void;
+  children: (close: () => void) => React.ReactNode;
+}> = ({ width, register, onClosed, children }) => {
+  const { theme } = useTheme();
+  const x = useRef(new Animated.Value(width)).current;
+
+  const close = useCallback(() => {
+    Animated.timing(x, { toValue: width, duration: 240, easing: Easing.in(Easing.cubic), useNativeDriver }).start(onClosed);
+  }, [width]);
+
+  useEffect(() => {
+    register(close);
+    Animated.timing(x, { toValue: 0, duration: 320, easing: Easing.out(Easing.cubic), useNativeDriver }).start();
+  }, []);
+
+  return (
+    <Animated.View
+      style={[
+        StyleSheet.absoluteFill,
+        {
+          backgroundColor: theme.bg,
+          transform: [{ translateX: x }],
+          shadowColor: '#000',
+          shadowOffset: { width: -6, height: 0 },
+          shadowOpacity: 0.12,
+          shadowRadius: 16,
+          elevation: 12,
+        },
+      ]}
+    >
+      {children(close)}
+    </Animated.View>
+  );
+};
+
+const makeStyles = (t: Theme) =>
+  StyleSheet.create({
+    root: { flex: 1, backgroundColor: t.bg },
+    screens: { flex: 1 },
+    hidden: { display: 'none' },
+    bar: {
+      position: 'absolute',
+      left: 14,
+      right: 14,
+      height: BAR_HEIGHT,
+      borderRadius: radius.xl,
+      backgroundColor: t.card,
+      flexDirection: 'row',
+      alignItems: 'center',
+      paddingHorizontal: 6,
+      borderWidth: 1,
+      borderColor: t.border,
+      ...shadow(t, 3),
+    },
+    tab: { flex: 1, height: '100%', alignItems: 'center', justifyContent: 'center' },
+    tabPill: {
+      position: 'absolute',
+      top: 8,
+      bottom: 8,
+      left: 4,
+      right: 4,
+      borderRadius: radius.lg,
+      backgroundColor: t.primarySoft,
+    },
+    tabLabel: { fontSize: 10.5, fontWeight: '800', color: t.primary, marginTop: 2 },
+    fabWrap: { position: 'absolute', left: 0, right: 0, alignItems: 'center' },
+    fab: {
+      width: FAB,
+      height: FAB,
+      borderRadius: FAB / 2,
+      alignItems: 'center',
+      justifyContent: 'center',
+      borderWidth: 4,
+      borderColor: t.bg,
+      ...shadow(t, 3),
+    },
+    menuTitle: {
+      position: 'absolute',
+      left: 0,
+      right: 0,
+      textAlign: 'center',
+      fontFamily: fonts.serif,
+      fontSize: 22,
+      fontWeight: '700',
+      color: '#FFFFFF',
+    },
+    menuItem: { position: 'absolute', width: 96, alignItems: 'center' },
+    menuCircle: {
+      width: 64,
+      height: 64,
+      borderRadius: 32,
+      alignItems: 'center',
+      justifyContent: 'center',
+      borderWidth: 3,
+      borderColor: 'rgba(255,255,255,0.85)',
+      ...shadow(t, 2),
+    },
+    menuLabel: { marginTop: 6, fontSize: 13.5, fontWeight: '800', color: '#FFFFFF' },
+  });

@@ -117,7 +117,7 @@ export const BookPickerModal: React.FC<BookPickerModalProps> = ({
         ) : (
           <FlatList
             data={books}
-            keyExtractor={(item) => item.id}
+            keyExtractor={(item, index) => item.id || `picker_${index}_${item.google_book_id || ''}`}
             contentContainerStyle={styles.listContent}
             renderItem={({ item }) => {
               const authors = item.authors?.join(', ') || 'Bilinmeyen Yazar';

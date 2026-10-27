@@ -1,614 +1,428 @@
-import React, { useState, useEffect, useRef, useCallback } from 'react';
+import React, { useEffect, useRef, useState } from 'react';
 import {
-  View,
-  Text,
-  StyleSheet,
-  FlatList,
-  TextInput,
-  TouchableOpacity,
   ActivityIndicator,
-  Platform,
+  Animated,
+  FlatList,
+  LayoutChangeEvent,
+  Pressable,
+  ScrollView,
+  StyleSheet,
+  Text,
+  TextInput,
+  View,
 } from 'react-native';
-import {
-  Search as SearchIcon,
-  X,
-  BookOpen,
-  Sparkles,
-  Database,
-  Globe,
-  AlertCircle,
-} from 'lucide-react-native';
-import { colors } from '../../theme/colors';
-import { Book } from '../../lib/types';
+import { BookPlus, Clock, PenLine, Search as SearchIcon, UserRound, X } from 'lucide-react-native';
+import { useAuth } from '../../context/AuthContext';
+import { useApp } from '../../context/AppContext';
+import { useStyles, useTheme } from '../../context/ThemeContext';
+import { AuthorResult, Book, Profile } from '../../lib/types';
+import { safeStorage } from '../../lib/supabase';
 import { booksService } from '../../services/booksService';
+import { socialService } from '../../services/socialService';
 import { BookCover } from '../../components/BookCover';
-import { BookDetailModal } from './BookDetailModal';
+import { Avatar, EmptyState, PressableScale, SectionTitle, useNativeDriver } from '../../components/ui';
+import { fonts, radius, shadow, Theme } from '../../theme/themes';
 
-const CATEGORIES = [
-  'Dünya Klasikleri',
-  'Türk Edebiyatı',
-  'Felsefe',
-  'Psikoloji',
-  'Roman',
-  'Tarih',
-  'Şiir',
-  'Bilim Kurgu',
+type Mode = 'books' | 'authors' | 'readers';
+const MODES: { id: Mode; label: string }[] = [
+  { id: 'books', label: 'Kitaplar' },
+  { id: 'authors', label: 'Yazarlar' },
+  { id: 'readers', label: 'Okurlar' },
 ];
+const RECENT_KEY = 'kitaphane.recentSearches';
 
-interface SearchScreenProps {
-  onShareQuoteRequest?: (book: Book) => void;
-  onShareReviewRequest?: (book: Book) => void;
-}
+export const SearchScreen: React.FC = () => {
+  const { theme } = useTheme();
+  const s = useStyles(makeStyles);
+  const { user } = useAuth();
+  const { push, openStatusSheet } = useApp();
 
-export const SearchScreen: React.FC<SearchScreenProps> = ({
-  onShareQuoteRequest,
-  onShareReviewRequest,
-}) => {
+  const [mode, setMode] = useState<Mode>('books');
   const [query, setQuery] = useState('');
-  const [selectedSource, setSelectedSource] = useState<'all' | 'openlibrary' | 'kitaphane'>('all');
-  const [selectedCategory, setSelectedCategory] = useState<string | null>(null);
-  const [books, setBooks] = useState<Book[]>([]);
+  const [focused, setFocused] = useState(false);
   const [loading, setLoading] = useState(false);
-  const [errorMessage, setErrorMessage] = useState<string | null>(null);
-  const [selectedBook, setSelectedBook] = useState<Book | null>(null);
-  const [fromApiCount, setFromApiCount] = useState(0);
+  const [loadingMore, setLoadingMore] = useState(false);
+  const [books, setBooks] = useState<Book[]>([]);
+  const [authors, setAuthors] = useState<AuthorResult[]>([]);
+  const [readers, setReaders] = useState<Profile[]>([]);
+  const [recent, setRecent] = useState<string[]>([]);
+  const [popular, setPopular] = useState<Book[]>([]);
+  const [newReaders, setNewReaders] = useState<Profile[]>([]);
+  const requestId = useRef(0);
+  const focusAnim = useRef(new Animated.Value(0)).current;
 
-  const debounceTimeout = useRef<ReturnType<typeof setTimeout> | null>(null);
-
-  const performSearch = useCallback(
-    async (
-      searchTerm: string,
-      source: 'all' | 'openlibrary' | 'kitaphane' = selectedSource,
-      category: string | null = selectedCategory
-    ) => {
-      setLoading(true);
-      setErrorMessage(null);
-
+  useEffect(() => {
+    safeStorage.getItem(RECENT_KEY).then((v) => {
       try {
-        const { books: results, fromApiCount: apiCount, error } =
-          await booksService.searchBooks({
-            query: searchTerm,
-            source,
-            category,
-            limit: 25,
-          });
-
-        if (error) {
-          setErrorMessage(error);
-        } else {
-          setBooks(results);
-          setFromApiCount(apiCount);
-        }
-      } catch (err: any) {
-        setErrorMessage(err.message || 'Arama sırasında bir sorun oluştu.');
-      } finally {
-        setLoading(false);
+        if (v) setRecent(JSON.parse(v));
+      } catch {
+        // bozuk kayıt yok sayılır
       }
-    },
-    [selectedSource, selectedCategory]
+    });
+    booksService.getPopularBooks(12).then(setPopular);
+    if (user) socialService.getSuggestedReaders(user.id, 6).then(setNewReaders);
+  }, []);
+
+  useEffect(() => {
+    Animated.timing(focusAnim, { toValue: focused ? 1 : 0, duration: 200, useNativeDriver: false }).start();
+  }, [focused]);
+
+  // Yazarken arama (debounce)
+  useEffect(() => {
+    const q = query.trim();
+    if (q.length < 2) {
+      setBooks([]);
+      setAuthors([]);
+      setReaders([]);
+      setLoading(false);
+      setLoadingMore(false);
+      return;
+    }
+    setLoading(true);
+    const id = ++requestId.current;
+    const timer = setTimeout(async () => {
+      if (mode === 'books') {
+        const { books: res } = await booksService.searchBooks(q, 30, (partial) => {
+          if (id === requestId.current) {
+            setBooks(partial);
+            setLoading(false);
+            setLoadingMore(true);
+          }
+        });
+        if (id === requestId.current) {
+          setBooks(res);
+          setLoadingMore(false);
+        }
+      } else if (mode === 'authors') {
+        const res = await booksService.searchAuthors(q, 15, (partial) => {
+          if (id === requestId.current) {
+            setAuthors(partial);
+            setLoading(false);
+            setLoadingMore(true);
+          }
+        });
+        if (id === requestId.current) {
+          setAuthors(res);
+          setLoadingMore(false);
+        }
+      } else {
+        const res = await socialService.searchUsers(q);
+        if (id === requestId.current) setReaders(res);
+      }
+      if (id === requestId.current) setLoading(false);
+    }, 380);
+    return () => clearTimeout(timer);
+  }, [query, mode]);
+
+  const remember = (q: string) => {
+    const term = q.trim();
+    if (term.length < 2) return;
+    const next = [term, ...recent.filter((r) => r.toLowerCase() !== term.toLowerCase())].slice(0, 8);
+    setRecent(next);
+    safeStorage.setItem(RECENT_KEY, JSON.stringify(next));
+  };
+
+  const clearRecent = () => {
+    setRecent([]);
+    safeStorage.removeItem(RECENT_KEY);
+  };
+
+  const openBook = (b: Book) => {
+    remember(query);
+    push({ name: 'book', book: b });
+  };
+
+  const hasQuery = query.trim().length >= 2;
+  const results: any[] = mode === 'books' ? books : mode === 'authors' ? authors : readers;
+
+  const renderBook = ({ item }: { item: Book }) => (
+    <PressableScale onPress={() => openBook(item)} scaleTo={0.98} style={s.bookRow}>
+      <BookCover url={item.thumbnail_url} title={item.title} author={item.authors?.[0]} isbn={item.isbn} width={54} />
+      <View style={{ flex: 1 }}>
+        <Text style={s.bookTitle} numberOfLines={2}>
+          {item.title}
+        </Text>
+        <Text style={s.bookAuthor} numberOfLines={1}>
+          {item.authors?.join(', ') || 'Yazar bilinmiyor'}
+        </Text>
+        <Text style={s.bookMeta} numberOfLines={1}>
+          {[item.published_date?.slice(0, 4), item.page_count ? `${item.page_count} sayfa` : null]
+            .filter(Boolean)
+            .join(' · ')}
+        </Text>
+      </View>
+      <Pressable
+        onPress={() => {
+          remember(query);
+          openStatusSheet(item);
+        }}
+        hitSlop={8}
+        style={s.quickAdd}
+        accessibilityLabel="Kitaplığa ekle"
+      >
+        <BookPlus size={19} color={theme.primary} />
+      </Pressable>
+    </PressableScale>
   );
 
-  // İlk açılışta popüler/kayıtlı kitapları getir
-  useEffect(() => {
-    performSearch('', selectedSource, selectedCategory);
-  }, [selectedSource, selectedCategory]);
+  const renderAuthor = ({ item }: { item: AuthorResult }) => (
+    <PressableScale
+      onPress={() => {
+        remember(query);
+        push({ name: 'author', author: item.name, authorKey: item.key });
+      }}
+      scaleTo={0.98}
+      style={s.personRow}
+    >
+      <Avatar name={item.name} url={item.photoUrl} size={52} />
+      <View style={{ flex: 1 }}>
+        <Text style={s.personName} numberOfLines={1}>
+          {item.name}
+        </Text>
+        <Text style={s.personSub} numberOfLines={1}>
+          {[item.topWork, item.workCount ? `${item.workCount} eser` : null].filter(Boolean).join(' · ') || 'Yazar'}
+        </Text>
+      </View>
+      <PenLine size={18} color={theme.textMuted} />
+    </PressableScale>
+  );
 
-  const handleSourceChange = (newSource: 'all' | 'openlibrary' | 'kitaphane') => {
-    setSelectedSource(newSource);
-    performSearch(query, newSource, selectedCategory);
-  };
+  const renderReader = ({ item }: { item: Profile }) => (
+    <PressableScale
+      onPress={() => {
+        remember(query);
+        push({ name: 'profile', userId: item.id });
+      }}
+      scaleTo={0.98}
+      style={s.personRow}
+    >
+      <Avatar name={item.full_name || item.username} url={item.avatar_url} size={52} />
+      <View style={{ flex: 1 }}>
+        <Text style={s.personName} numberOfLines={1}>
+          {item.full_name || item.username}
+        </Text>
+        <Text style={s.personSub} numberOfLines={1}>
+          @{item.username}
+          {item.bio ? ` · ${item.bio}` : ''}
+        </Text>
+      </View>
+      <UserRound size={18} color={theme.textMuted} />
+    </PressableScale>
+  );
 
-  const handleQueryChange = (text: string) => {
-    setQuery(text);
-
-    if (debounceTimeout.current) {
-      clearTimeout(debounceTimeout.current);
-    }
-
-    debounceTimeout.current = setTimeout(() => {
-      performSearch(text, selectedSource, selectedCategory);
-    }, 400);
-  };
-
-  const handleCategorySelect = (category: string) => {
-    const nextCat = selectedCategory === category ? null : category;
-    setSelectedCategory(nextCat);
-    performSearch(query, selectedSource, nextCat);
-  };
-
-  const handleClear = () => {
-    setQuery('');
-    setSelectedCategory(null);
-    performSearch('', selectedSource, null);
-  };
-
-  const renderBookItem = ({ item }: { item: Book }) => {
-    const authors = item.authors?.join(', ') || 'Bilinmeyen Yazar';
-    const isFromApi = item.id.startsWith('temp_');
-
-    return (
-      <TouchableOpacity
-        style={styles.bookCard}
-        activeOpacity={0.7}
-        onPress={() => setSelectedBook(item)}
-      >
-        <BookCover
-          url={item.thumbnail_url}
-          title={item.title}
-          author={authors}
-          width={65}
-          height={95}
-        />
-
-        <View style={styles.bookInfo}>
-          <Text style={styles.bookTitle} numberOfLines={2}>
-            {item.title}
-          </Text>
-
-          {item.subtitle ? (
-            <Text style={styles.bookSubtitle} numberOfLines={1}>
-              {item.subtitle}
-            </Text>
-          ) : null}
-
-          <Text style={styles.bookAuthor} numberOfLines={1}>
-            {authors}
-          </Text>
-
-          <View style={styles.metaRow}>
-            {item.page_count ? (
-              <Text style={styles.metaText}>{item.page_count} sayfa</Text>
-            ) : null}
-
-            {item.published_date ? (
-              <Text style={styles.metaText}>
-                {item.published_date.slice(0, 4)}
-              </Text>
-            ) : null}
-
-            <View style={styles.sourceBadge}>
-              {isFromApi ? (
-                <>
-                  <Globe size={11} color={colors.accentDark} />
-                  <Text style={styles.sourceTextApi}>
-                    {item.google_book_id?.startsWith('ol_') ? 'Open Library' : 'Google Books'}
-                  </Text>
-                </>
-              ) : (
-                <>
-                  <Database size={11} color={colors.primary} />
-                  <Text style={styles.sourceTextDb}>Kitaphane</Text>
-                </>
-              )}
-            </View>
+  const discover = (
+    <View style={{ paddingTop: 8 }}>
+      {recent.length > 0 && (
+        <View style={s.block}>
+          <SectionTitle title="Son aramalar" action={{ label: 'Temizle', onPress: clearRecent }} />
+          <View style={s.recentWrap}>
+            {recent.map((r) => (
+              <PressableScale key={r} onPress={() => setQuery(r)} style={s.recentChip}>
+                <Clock size={13} color={theme.textMuted} />
+                <Text style={s.recentText}>{r}</Text>
+              </PressableScale>
+            ))}
           </View>
         </View>
-      </TouchableOpacity>
-    );
-  };
+      )}
 
-  const renderHeader = () => (
-    <View style={styles.listHeader}>
-      {/* Popüler Kategoriler */}
-      <Text style={styles.sectionTitle}>Edebî Türler</Text>
-      <FlatList
-        horizontal
-        data={CATEGORIES}
-        keyExtractor={(item) => item}
-        showsHorizontalScrollIndicator={false}
-        contentContainerStyle={styles.categoryList}
-        renderItem={({ item }) => {
-          const isSelected = selectedCategory === item;
-          return (
-            <TouchableOpacity
-              onPress={() => handleCategorySelect(item)}
-              style={[
-                styles.categoryChip,
-                isSelected && styles.categoryChipActive,
-              ]}
-            >
-              <Text
-                style={[
-                  styles.categoryText,
-                  isSelected && styles.categoryTextActive,
-                ]}
-              >
-                {item}
-              </Text>
-            </TouchableOpacity>
-          );
-        }}
-      />
+      {popular.length > 0 && (
+        <View style={s.block}>
+          <SectionTitle title="Okurların rafından" />
+          <ScrollView horizontal showsHorizontalScrollIndicator={false} contentContainerStyle={{ gap: 14, paddingRight: 20 }}>
+            {popular.map((b) => (
+              <PressableScale key={b.id} onPress={() => openBook(b)} style={{ width: 104 }}>
+                <BookCover url={b.thumbnail_url} title={b.title} author={b.authors?.[0]} width={104} />
+                <Text style={s.popTitle} numberOfLines={2}>
+                  {b.title}
+                </Text>
+                <Text style={s.popAuthor} numberOfLines={1}>
+                  {b.authors?.[0]}
+                </Text>
+              </PressableScale>
+            ))}
+          </ScrollView>
+        </View>
+      )}
 
-      {/* Sonuç Başlığı */}
-      <View style={styles.resultsHeaderRow}>
-        <Text style={styles.sectionTitle}>
-          {query.trim() ? `"${query.trim()}" Sonuçları` : 'Öne Çıkan Eserler'}
-        </Text>
-        {books.length > 0 && (
-          <Text style={styles.resultCountText}>{books.length} eser</Text>
-        )}
-      </View>
+      {newReaders.length > 0 && (
+        <View style={s.block}>
+          <SectionTitle title="Yeni okurlar" />
+          {newReaders.map((p) => (
+            <View key={p.id}>{renderReader({ item: p })}</View>
+          ))}
+        </View>
+      )}
     </View>
   );
 
-  const renderEmptyState = () => {
-    if (loading) {
-      return (
-        <View style={styles.stateContainer}>
-          <ActivityIndicator size="large" color={colors.primary} />
-          <Text style={styles.loadingText}>Katalog taranıyor...</Text>
-        </View>
-      );
-    }
-
-    if (errorMessage) {
-      return (
-        <View style={styles.stateContainer}>
-          <AlertCircle size={40} color={colors.error} />
-          <Text style={styles.errorTitle}>Arama Yapılamadı</Text>
-          <Text style={styles.errorSubtitle}>{errorMessage}</Text>
-        </View>
-      );
-    }
-
-    return (
-      <View style={styles.stateContainer}>
-        <View style={styles.iconCircle}>
-          <BookOpen size={36} color={colors.goldDark} />
-        </View>
-        <Text style={styles.emptyTitle}>Eser Bulunamadı</Text>
-        <Text style={styles.emptySubtitle}>
-          Farklı bir yazar veya kitap başlığıyla aramayı deneyebilir ya da türleri inceleyebilirsiniz.
-        </Text>
-      </View>
-    );
-  };
-
   return (
-    <View style={styles.container}>
-      {/* Üst Arama Başlığı */}
-      <View style={styles.topHeader}>
-        <Text style={styles.pageTitle}>Kitap Kataloğu</Text>
-        <Text style={styles.pageSubtitle}>
-          Milyonlarca kitap, yazar ve edebî eser arasında arayın
-        </Text>
+    <View style={s.container}>
+      <Text style={s.title}>Keşfet</Text>
 
-        <View style={styles.searchBar}>
-          <SearchIcon size={18} color={colors.textSecondary} />
-          <TextInput
-            placeholder="Kitap başlığı, yazar veya ISBN..."
-            placeholderTextColor={colors.textTertiary}
-            value={query}
-            onChangeText={handleQueryChange}
-            style={styles.searchInput}
-            returnKeyType="search"
-            autoCorrect={false}
-          />
-          {query.length > 0 && (
-            <TouchableOpacity onPress={handleClear} hitSlop={{ top: 10, bottom: 10, left: 10, right: 10 }}>
-              <X size={18} color={colors.textSecondary} />
-            </TouchableOpacity>
-          )}
-        </View>
+      <Animated.View
+        style={[
+          s.searchBar,
+          {
+            borderColor: focusAnim.interpolate({ inputRange: [0, 1], outputRange: [theme.border, theme.primary] }),
+          },
+        ]}
+      >
+        <SearchIcon size={20} color={focused ? theme.primary : theme.textMuted} />
+        <TextInput
+          value={query}
+          onChangeText={setQuery}
+          onFocus={() => setFocused(true)}
+          onBlur={() => setFocused(false)}
+          onSubmitEditing={() => remember(query)}
+          placeholder={
+            mode === 'books' ? 'Kitap adı, yazar ya da ISBN' : mode === 'authors' ? 'Yazar adı' : 'Okur adı ya da kullanıcı adı'
+          }
+          placeholderTextColor={theme.textMuted}
+          style={s.input}
+          returnKeyType="search"
+          autoCorrect={false}
+        />
+        {query.length > 0 && (
+          <Pressable onPress={() => setQuery('')} hitSlop={10} style={s.clear}>
+            <X size={14} color={theme.card} />
+          </Pressable>
+        )}
+      </Animated.View>
 
-        {/* Arama Kaynağı Seçici */}
-        <View style={styles.sourceTabsRow}>
-          <TouchableOpacity
-            style={[
-              styles.sourceTab,
-              selectedSource === 'all' && styles.sourceTabActive,
-            ]}
-            onPress={() => handleSourceChange('all')}
-          >
-            <Sparkles size={13} color={selectedSource === 'all' ? colors.textInverse : colors.textSecondary} />
-            <Text style={[styles.sourceTabText, selectedSource === 'all' && styles.sourceTabTextActive]}>
-              Tümü
-            </Text>
-          </TouchableOpacity>
+      <ModeTabs mode={mode} onChange={setMode} />
 
-          <TouchableOpacity
-            style={[
-              styles.sourceTab,
-              selectedSource === 'openlibrary' && styles.sourceTabActive,
-            ]}
-            onPress={() => handleSourceChange('openlibrary')}
-          >
-            <Globe size={13} color={selectedSource === 'openlibrary' ? colors.textInverse : colors.textSecondary} />
-            <Text style={[styles.sourceTabText, selectedSource === 'openlibrary' && styles.sourceTabTextActive]}>
-              Open Library
-            </Text>
-          </TouchableOpacity>
-
-          <TouchableOpacity
-            style={[
-              styles.sourceTab,
-              selectedSource === 'kitaphane' && styles.sourceTabActive,
-            ]}
-            onPress={() => handleSourceChange('kitaphane')}
-          >
-            <Database size={13} color={selectedSource === 'kitaphane' ? colors.textInverse : colors.textSecondary} />
-            <Text style={[styles.sourceTabText, selectedSource === 'kitaphane' && styles.sourceTabTextActive]}>
-              Kitaphane DB
-            </Text>
-          </TouchableOpacity>
-        </View>
-      </View>
-
-      {/* Arama Sonuçları Listesi */}
-      <FlatList
-        data={books}
-        keyExtractor={(item) => item.id}
-        renderItem={renderBookItem}
-        ListHeaderComponent={renderHeader}
-        ListEmptyComponent={renderEmptyState}
-        contentContainerStyle={styles.listContent}
-        showsVerticalScrollIndicator={false}
-      />
-
-      {/* Kitap Detay Modalı */}
-      <BookDetailModal
-        visible={!!selectedBook}
-        book={selectedBook}
-        onClose={() => setSelectedBook(null)}
-        onBookUpdated={() => {
-          if (query.trim()) performSearch(query, selectedSource, selectedCategory);
-        }}
-        onShareQuote={(b) => onShareQuoteRequest?.(b)}
-        onShareReview={(b) => onShareReviewRequest?.(b)}
-      />
+      {!hasQuery ? (
+        <ScrollView contentContainerStyle={{ paddingBottom: 120 }} keyboardShouldPersistTaps="handled" showsVerticalScrollIndicator={false}>
+          {discover}
+        </ScrollView>
+      ) : (
+        <FlatList
+          data={loading ? [] : results}
+          keyExtractor={(item: any, i) => item.id || item.key || `${item.name}_${i}`}
+          renderItem={mode === 'books' ? (renderBook as any) : mode === 'authors' ? (renderAuthor as any) : (renderReader as any)}
+          contentContainerStyle={{ paddingHorizontal: 16, paddingBottom: 120 }}
+          keyboardShouldPersistTaps="handled"
+          keyboardDismissMode="on-drag"
+          showsVerticalScrollIndicator={false}
+          ListFooterComponent={
+            loadingMore && mode !== 'readers' ? (
+              <View style={s.moreRow}>
+                <ActivityIndicator size="small" color={theme.primary} />
+                <Text style={s.moreText}>{mode === 'books' ? 'Daha fazla kitap aranıyor…' : 'Daha fazla yazar aranıyor…'}</Text>
+              </View>
+            ) : null
+          }
+          ListEmptyComponent={
+            loading ? (
+              <ActivityIndicator color={theme.primary} style={{ marginTop: 40 }} />
+            ) : (
+              <EmptyState
+                icon={<SearchIcon size={28} color={theme.primary} />}
+                title="Sonuç bulunamadı"
+                text={`“${query.trim()}” için ${MODES.find((m) => m.id === mode)!.label.toLowerCase()} arasında bir şey bulamadık. Farklı bir yazım dene.`}
+              />
+            )
+          }
+        />
+      )}
     </View>
   );
 };
 
-const styles = StyleSheet.create({
-  container: {
-    flex: 1,
-    backgroundColor: colors.background,
-  },
-  topHeader: {
-    backgroundColor: colors.surfaceWarm,
-    paddingHorizontal: 20,
-    paddingTop: 16,
-    paddingBottom: 14,
-    borderBottomWidth: 1,
-    borderBottomColor: colors.borderLight,
-  },
-  pageTitle: {
-    fontSize: 24,
-    fontWeight: '700',
-    color: colors.text,
-    fontFamily: 'serif',
-    marginBottom: 4,
-  },
-  pageSubtitle: {
-    fontSize: 13,
-    color: colors.textSecondary,
-    marginBottom: 14,
-  },
-  searchBar: {
-    flexDirection: 'row',
-    alignItems: 'center',
-    backgroundColor: colors.surface,
-    borderWidth: 1.5,
-    borderColor: colors.border,
-    borderRadius: 12,
-    paddingHorizontal: 14,
-    height: 48,
-    shadowColor: colors.leatherDark,
-    shadowOffset: { width: 0, height: 2 },
-    shadowOpacity: 0.06,
-    shadowRadius: 4,
-    elevation: 2,
-  },
-  sourceTabsRow: {
-    flexDirection: 'row',
-    marginTop: 12,
-    backgroundColor: colors.surfaceVariant,
-    borderRadius: 10,
-    padding: 3,
-    gap: 4,
-  },
-  sourceTab: {
-    flex: 1,
-    flexDirection: 'row',
-    alignItems: 'center',
-    justifyContent: 'center',
-    gap: 6,
-    paddingVertical: 7,
-    borderRadius: 8,
-  },
-  sourceTabActive: {
-    backgroundColor: colors.primary,
-    shadowColor: colors.leatherDark,
-    shadowOffset: { width: 0, height: 1 },
-    shadowOpacity: 0.1,
-    shadowRadius: 2,
-    elevation: 2,
-  },
-  sourceTabText: {
-    fontSize: 12,
-    fontWeight: '600',
-    color: colors.textSecondary,
-  },
-  sourceTabTextActive: {
-    color: colors.textInverse,
-    fontWeight: '700',
-  },
-  searchInput: {
-    flex: 1,
-    color: colors.text,
-    fontSize: 14,
-    marginLeft: 10,
-    paddingVertical: 0,
-  },
-  listContent: {
-    paddingBottom: 30,
-  },
-  listHeader: {
-    paddingHorizontal: 20,
-    paddingTop: 16,
-  },
-  sectionTitle: {
-    fontSize: 16,
-    fontWeight: '700',
-    color: colors.text,
-    fontFamily: 'serif',
-    marginBottom: 10,
-  },
-  categoryList: {
-    gap: 8,
-    paddingBottom: 16,
-  },
-  categoryChip: {
-    backgroundColor: colors.surface,
-    paddingHorizontal: 14,
-    paddingVertical: 8,
-    borderRadius: 20,
-    borderWidth: 1,
-    borderColor: colors.border,
-  },
-  categoryChipActive: {
-    backgroundColor: colors.primary,
-    borderColor: colors.primary,
-  },
-  categoryText: {
-    fontSize: 13,
-    color: colors.textSecondary,
-    fontWeight: '500',
-  },
-  categoryTextActive: {
-    color: colors.textInverse,
-    fontWeight: '700',
-  },
-  resultsHeaderRow: {
-    flexDirection: 'row',
-    justifyContent: 'space-between',
-    alignItems: 'center',
-    marginTop: 6,
-    marginBottom: 10,
-  },
-  resultCountText: {
-    fontSize: 12,
-    color: colors.textTertiary,
-    fontWeight: '500',
-  },
-  bookCard: {
-    flexDirection: 'row',
-    backgroundColor: colors.surface,
-    marginHorizontal: 20,
-    marginBottom: 12,
-    padding: 12,
-    borderRadius: 12,
-    borderWidth: 1,
-    borderColor: colors.border,
-    shadowColor: colors.borderDark,
-    shadowOffset: { width: 0, height: 2 },
-    shadowOpacity: 0.08,
-    shadowRadius: 4,
-    elevation: 2,
-    alignItems: 'center',
-  },
-  bookInfo: {
-    flex: 1,
-    marginLeft: 14,
-  },
-  bookTitle: {
-    fontSize: 15,
-    fontWeight: '700',
-    color: colors.text,
-    fontFamily: 'serif',
-    lineHeight: 20,
-    marginBottom: 2,
-  },
-  bookSubtitle: {
-    fontSize: 12,
-    color: colors.textSecondary,
-    fontStyle: 'italic',
-    marginBottom: 4,
-  },
-  bookAuthor: {
-    fontSize: 13,
-    color: colors.primary,
-    fontWeight: '600',
-    marginBottom: 6,
-  },
-  metaRow: {
-    flexDirection: 'row',
-    alignItems: 'center',
-    gap: 8,
-    flexWrap: 'wrap',
-  },
-  metaText: {
-    fontSize: 11,
-    color: colors.textTertiary,
-  },
-  sourceBadge: {
-    flexDirection: 'row',
-    alignItems: 'center',
-    gap: 4,
-    backgroundColor: colors.surfaceVariant,
-    paddingHorizontal: 7,
-    paddingVertical: 2,
-    borderRadius: 8,
-  },
-  sourceTextApi: {
-    fontSize: 10,
-    fontWeight: '600',
-    color: colors.accentDark,
-  },
-  sourceTextDb: {
-    fontSize: 10,
-    fontWeight: '600',
-    color: colors.primary,
-  },
-  stateContainer: {
-    alignItems: 'center',
-    justifyContent: 'center',
-    padding: 40,
-    marginTop: 20,
-  },
-  loadingText: {
-    marginTop: 12,
-    fontSize: 14,
-    color: colors.textSecondary,
-    fontFamily: 'serif',
-  },
-  iconCircle: {
-    width: 68,
-    height: 68,
-    borderRadius: 34,
-    backgroundColor: colors.surfaceVariant,
-    justifyContent: 'center',
-    alignItems: 'center',
-    marginBottom: 14,
-    borderWidth: 1,
-    borderColor: colors.border,
-  },
-  emptyTitle: {
-    fontSize: 17,
-    fontWeight: '700',
-    color: colors.text,
-    fontFamily: 'serif',
-    marginBottom: 6,
-  },
-  emptySubtitle: {
-    fontSize: 13,
-    color: colors.textSecondary,
-    textAlign: 'center',
-    lineHeight: 20,
-    maxWidth: 280,
-  },
-  errorTitle: {
-    fontSize: 16,
-    fontWeight: '700',
-    color: colors.error,
-    marginTop: 12,
-    marginBottom: 4,
-  },
-  errorSubtitle: {
-    fontSize: 13,
-    color: colors.textSecondary,
-    textAlign: 'center',
-  },
-});
+const ModeTabs: React.FC<{ mode: Mode; onChange: (m: Mode) => void }> = ({ mode, onChange }) => {
+  const s = useStyles(makeStyles);
+  const [w, setW] = useState(0);
+  const idx = MODES.findIndex((m) => m.id === mode);
+  const x = useRef(new Animated.Value(idx)).current;
+  useEffect(() => {
+    Animated.spring(x, { toValue: idx, friction: 8, tension: 90, useNativeDriver }).start();
+  }, [idx]);
+  const seg = w / MODES.length;
+  return (
+    <View style={s.modes} onLayout={(e: LayoutChangeEvent) => setW(e.nativeEvent.layout.width - 8)}>
+      {w > 0 && (
+        <Animated.View
+          style={[s.modeIndicator, { width: seg, transform: [{ translateX: x.interpolate({ inputRange: [0, 1, 2], outputRange: [0, seg, seg * 2] }) }] }]}
+        />
+      )}
+      {MODES.map((m) => (
+        <Pressable key={m.id} onPress={() => onChange(m.id)} style={s.mode}>
+          <Text style={[s.modeText, mode === m.id && s.modeTextActive]}>{m.label}</Text>
+        </Pressable>
+      ))}
+    </View>
+  );
+};
+
+const makeStyles = (t: Theme) =>
+  StyleSheet.create({
+    container: { flex: 1, backgroundColor: t.bg },
+    title: { fontFamily: fonts.serif, fontSize: 30, fontWeight: '700', color: t.text, paddingHorizontal: 20, paddingTop: 14 },
+    searchBar: {
+      flexDirection: 'row',
+      alignItems: 'center',
+      gap: 10,
+      marginHorizontal: 16,
+      marginTop: 14,
+      paddingHorizontal: 16,
+      height: 54,
+      borderRadius: radius.pill,
+      backgroundColor: t.card,
+      borderWidth: 1.5,
+      ...shadow(t, 1),
+    },
+    input: { flex: 1, fontSize: 16, color: t.text, height: '100%', outlineStyle: 'none' } as any,
+    clear: { width: 22, height: 22, borderRadius: 11, backgroundColor: t.textMuted, alignItems: 'center', justifyContent: 'center' },
+    modes: { flexDirection: 'row', marginHorizontal: 16, marginTop: 14, marginBottom: 10, padding: 4, borderRadius: radius.pill, backgroundColor: t.bgSoft },
+    modeIndicator: { position: 'absolute', top: 4, bottom: 4, left: 4, borderRadius: radius.pill, backgroundColor: t.primary },
+    mode: { flex: 1, alignItems: 'center', paddingVertical: 9 },
+    modeText: { fontSize: 14, fontWeight: '600', color: t.textSoft },
+    modeTextActive: { color: t.onPrimary, fontWeight: '800' },
+    block: { paddingHorizontal: 20, marginTop: 18 },
+    recentWrap: { flexDirection: 'row', flexWrap: 'wrap', gap: 8 },
+    recentChip: {
+      flexDirection: 'row',
+      alignItems: 'center',
+      gap: 6,
+      paddingHorizontal: 12,
+      paddingVertical: 8,
+      borderRadius: radius.pill,
+      backgroundColor: t.card,
+      borderWidth: 1,
+      borderColor: t.border,
+    },
+    recentText: { fontSize: 13, color: t.textSoft, fontWeight: '600' },
+    popTitle: { fontSize: 13, fontWeight: '700', color: t.text, marginTop: 8 },
+    popAuthor: { fontSize: 11.5, color: t.textMuted, marginTop: 2 },
+    bookRow: {
+      flexDirection: 'row',
+      alignItems: 'center',
+      gap: 14,
+      padding: 12,
+      marginBottom: 10,
+      borderRadius: radius.lg,
+      backgroundColor: t.card,
+      borderWidth: 1,
+      borderColor: t.border,
+    },
+    bookTitle: { fontFamily: fonts.serif, fontSize: 16, fontWeight: '700', color: t.text },
+    bookAuthor: { fontSize: 13, color: t.textSoft, marginTop: 3 },
+    bookMeta: { fontSize: 12, color: t.textMuted, marginTop: 4 },
+    quickAdd: { width: 40, height: 40, borderRadius: 20, backgroundColor: t.primarySoft, alignItems: 'center', justifyContent: 'center' },
+    personRow: {
+      flexDirection: 'row',
+      alignItems: 'center',
+      gap: 14,
+      padding: 12,
+      marginBottom: 10,
+      borderRadius: radius.lg,
+      backgroundColor: t.card,
+      borderWidth: 1,
+      borderColor: t.border,
+    },
+    moreRow: { flexDirection: 'row', alignItems: 'center', justifyContent: 'center', gap: 8, paddingVertical: 16 },
+    moreText: { fontSize: 13, color: t.textMuted },
+    personName: { fontSize: 15.5, fontWeight: '700', color: t.text },
+    personSub: { fontSize: 13, color: t.textMuted, marginTop: 2 },
+  });
